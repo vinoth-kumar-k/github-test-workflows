@@ -119,22 +119,22 @@ jobs:
       - name: Deployment summary
         shell: pwsh
         run: |
-          echo "### VB.NET Deployment Completed! 🚀" >> $env:GITHUB_STEP_SUMMARY
-          echo "" >> $env:GITHUB_STEP_SUMMARY
-          echo "**Environment:** ${{ steps.determine-env.outputs.environment }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "**VM:** ${{ steps.keyvault.outputs.vm-name }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "**Resource Group:** ${{ steps.keyvault.outputs.vm-resource-group }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "**Status:** ${{ steps.deploy-vm.outputs.deployment-status }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "" >> $env:GITHUB_STEP_SUMMARY
-          echo "**Application URL:** ${{ steps.deploy-vm.outputs.app-url }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "" >> $env:GITHUB_STEP_SUMMARY
-          echo "**Deployment Method:** Azure VM Run Command (no WinRM required)" >> $env:GITHUB_STEP_SUMMARY
+          "### VB.NET Deployment Completed!" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Environment:** ${{ steps.determine-env.outputs.environment }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**VM:** ${{ steps.keyvault.outputs.vm-name }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Resource Group:** ${{ steps.keyvault.outputs.vm-resource-group }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Status:** ${{ steps.deploy-vm.outputs.deployment-status }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Application URL:** ${{ steps.deploy-vm.outputs.app-url }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Deployment Method:** Azure VM Run Command (no WinRM required)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: Notify on failure
         if: failure()
         shell: pwsh
         run: |
           Write-Error "Deployment failed! Check the logs above for details."
-          echo "### ❌ Deployment Failed" >> $env:GITHUB_STEP_SUMMARY
-          echo "" >> $env:GITHUB_STEP_SUMMARY
-          echo "Please check the workflow logs for error details." >> $env:GITHUB_STEP_SUMMARY
+          "### Deployment Failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Please check the workflow logs for error details." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
