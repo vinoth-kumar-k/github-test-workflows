@@ -1,0 +1,121 @@
+name: 'Build with MSBuild'
+description: 'Builds .NET Framework applications using MSBuild (for VB.NET and C# legacy apps)'
+author: 'Architecture Team'
+
+inputs:
+  solution-path:
+    description: 'Path to solution or project file'
+    required: true
+  configuration:
+    description: 'Build configuration (Debug/Release)'
+    required: false
+    default: 'Release'
+  platform:
+    description: 'Build platform (Any CPU, x86, x64)'
+    required: false
+    default: 'Any CPU'
+  msbuild-version:
+    description: 'MSBuild version'
+    required: false
+    default: 'latest'
+  restore-nuget:
+    description: 'Restore NuGet packages before build'
+    required: false
+    default: 'true'
+  create-package:
+    description: 'Create Web Deploy package'
+    required: false
+    default: 'true'
+
+outputs:
+  build-output:
+    description: 'Path to build output'
+    value: ${{ steps.build.outputs.build-output }}
+  package-path:
+    description: 'Path to deployment package'
+    value: ${{ steps.build.outputs.package-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+      with:
+        msbuild-version: ${{ inputs.msbuild-version }}
+
+    - name: Setup NuGet
+      uses: NuGet/setup-nuget@v2
+
+    - name: Cache NuGet packages
+      if: inputs.restore-nuget == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.config', '**/*.sln') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+
+    - name: Restore NuGet packages
+      if: inputs.restore-nuget == 'true'
+      shell: pwsh
+      run: nuget restore "${{ inputs.solution-path }}"
+
+    - name: Build with MSBuild
+      id: build
+      shell: pwsh
+      run: |
+        # Determine platform parameter format
+        $platformParam = "${{ inputs.platform }}"
+
+        # Build arguments
+        $buildArgs = @(
+          "${{ inputs.solution-path }}",
+          "/p:Configuration=${{ inputs.configuration }}",
+          "/p:Platform=`"$platformParam`"",
+          "/maxcpucount",
+          "/verbosity:minimal"
+        )
+
+        # Add Web Deploy package creation if enabled
+        if ("${{ inputs.create-package }}" -eq "true") {
+          $buildArgs += @(
+            "/p:DeployOnBuild=true",
+            "/p:WebPublishMethod=Package",
+            "/p:PackageAsSingleFile=true",
+            "/p:SkipInvalidConfigurations=true",
+            "/p:PackageLocation=`"$(Get-Location)\publish`""
+          )
+        }
+
+        # Execute MSBuild
+        Write-Host "Building with MSBuild..."
+        Write-Host "Arguments: $buildArgs"
+
+        msbuild @buildArgs
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "MSBuild failed with exit code $LASTEXITCODE"
+          exit $LASTEXITCODE
+        }
+
+        # Set outputs
+        $solutionDir = Split-Path -Parent "${{ inputs.solution-path }}"
+        echo "build-output=$solutionDir\bin\${{ inputs.configuration }}" >> $env:GITHUB_OUTPUT
+
+        # Find package if created
+        if (Test-Path "publish") {
+          $package = Get-ChildItem -Path "publish" -Filter "*.zip" -File | Select-Object -First 1
+          if ($package) {
+            echo "package-path=$($package.FullName)" >> $env:GITHUB_OUTPUT
+            Write-Host "Deployment package created: $($package.FullName)"
+          }
+        }
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-output
+        path: |
+          **/bin/${{ inputs.configuration }}
+          publish/*.zip
+        retention-days: 30

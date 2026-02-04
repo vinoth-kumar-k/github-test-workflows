@@ -1,0 +1,57 @@
+name: 'Build .NET Application'
+description: 'Builds a .NET application with caching and dependency restoration'
+author: 'Architecture Team'
+
+inputs:
+  dotnet-version:
+    description: '.NET SDK version to use'
+    required: false
+    default: '9.0.x'
+  project-path:
+    description: 'Path to project or solution file (relative to repository root)'
+    required: true
+  configuration:
+    description: 'Build configuration (Debug/Release)'
+    required: false
+    default: 'Release'
+  restore-cache:
+    description: 'Enable NuGet package caching'
+    required: false
+    default: 'true'
+
+outputs:
+  artifact-path:
+    description: 'Path to build artifacts'
+    value: ${{ steps.build.outputs.artifact-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Cache NuGet packages
+      if: inputs.restore-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/*.vbproj') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+
+    - name: Restore dependencies
+      shell: bash
+      run: dotnet restore ${{ inputs.project-path }}
+
+    - name: Build
+      id: build
+      shell: bash
+      run: |
+        dotnet build ${{ inputs.project-path }} \
+          --configuration ${{ inputs.configuration }} \
+          --no-restore
+
+        # Set output path (example - adjust based on project structure)
+        echo "artifact-path=${{ inputs.project-path }}/bin/${{ inputs.configuration }}" >> $GITHUB_OUTPUT

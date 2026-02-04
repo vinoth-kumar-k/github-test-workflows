@@ -1,0 +1,41 @@
+# Environment-specific configuration for GitHub Actions workflows
+# This file contains parameterized settings for different deployment environments
+
+dev:
+  dotnet-core:
+    acr-name: myacrdev
+    aks-cluster: aks-dev
+    namespace: dev
+    image-tag-suffix: dev
+  vbnet:
+    vm-name: vm-dev
+    resource-group: rg-dev
+    iis-site: Default Web Site
+    iis-app-name: VBNetApp-Dev
+    iis-app-pool: VBNetAppPool-Dev
+
+staging:
+  dotnet-core:
+    acr-name: myacrstaging
+    aks-cluster: aks-staging
+    namespace: staging
+    image-tag-suffix: staging
+  vbnet:
+    vm-name: vm-staging
+    resource-group: rg-staging
+    iis-site: Default Web Site
+    iis-app-name: VBNetApp-Staging
+    iis-app-pool: VBNetAppPool-Staging
+
+prod:
+  dotnet-core:
+    acr-name: myacrprod
+    aks-cluster: aks-prod
+    namespace: production
+    image-tag-suffix: latest
+  vbnet:
+    vm-name: vm-prod
+    resource-group: rg-prod
+    iis-site: Default Web Site
+    iis-app-name: VBNetApp
+    iis-app-pool: VBNetAppPool

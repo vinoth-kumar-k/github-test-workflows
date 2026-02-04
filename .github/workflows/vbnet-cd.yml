@@ -1,0 +1,140 @@
+name: VB.NET CD to Azure VM
+
+on:
+  workflow_run:
+    workflows: ["VB.NET CI"]
+    types: [completed]
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: 'dev'
+      artifact-run-id:
+        description: 'CI run ID to deploy from (leave empty to use latest)'
+        required: false
+
+env:
+  DEPLOYMENT_SCRIPT_PATH: 'src/VBNetApp/deployment/deploy.ps1'
+
+jobs:
+  deploy:
+    name: Deploy to Azure Windows VM
+    runs-on: windows-latest
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+      url: ${{ steps.deploy-vm.outputs.app-url }}
+
+    # Only run if CI workflow succeeded or manual dispatch
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine deployment environment
+        id: determine-env
+        shell: pwsh
+        run: |
+          # Determine environment based on trigger
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $env = "${{ github.event.inputs.environment }}"
+          } else {
+            # Default to dev for workflow_run triggers
+            $env = "dev"
+          }
+
+          echo "environment=$env" >> $env:GITHUB_OUTPUT
+          Write-Host "Deploying to environment: $env"
+
+      - name: Load environment configuration
+        id: load-config
+        shell: pwsh
+        run: |
+          # Load environment-specific configuration
+          $config = Get-Content -Path ".github/config/environments.yml" -Raw
+          Write-Host "Environment configuration loaded"
+
+          # Note: In a real workflow, you would parse YAML and extract values
+          # For this POC, we'll use Key Vault values directly
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Fetch secrets from Azure Key Vault
+        id: keyvault
+        uses: Azure/get-keyvault-secrets@v1
+        with:
+          keyvault: ${{ secrets.KEY_VAULT_NAME }}
+          secrets: 'vm-name, vm-resource-group'
+
+      - name: Download deployment package
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-package-${{ github.event.workflow_run.head_sha || github.sha }}
+          path: ./deployment-artifacts
+          # Note: For workflow_run, this downloads from the triggering workflow
+          # For workflow_dispatch, you may need to specify run-id
+
+      - name: Verify deployment package
+        shell: pwsh
+        run: |
+          Write-Host "Verifying deployment package..."
+          $package = Get-ChildItem -Path "./deployment-artifacts" -Filter "*.zip" -File | Select-Object -First 1
+
+          if (-not $package) {
+            Write-Error "Deployment package not found!"
+            exit 1
+          }
+
+          Write-Host "Package found: $($package.Name)"
+          Write-Host "Package size: $([math]::Round($package.Length / 1MB, 2)) MB"
+          Write-Host "Full path: $($package.FullName)"
+
+          # Set package path for next step
+          echo "PACKAGE_PATH=$($package.FullName)" >> $env:GITHUB_ENV
+
+      - name: Deploy to Azure VM
+        id: deploy-vm
+        uses: ./.github/actions/azure-vm-deploy
+        with:
+          keyvault-name: ${{ secrets.KEY_VAULT_NAME }}
+          vm-name: ${{ steps.keyvault.outputs.vm-name }}
+          resource-group: ${{ steps.keyvault.outputs.vm-resource-group }}
+          deployment-package-path: ${{ env.PACKAGE_PATH }}
+          deployment-script-path: ${{ env.DEPLOYMENT_SCRIPT_PATH }}
+          iis-site-name: 'Default Web Site'
+          iis-app-name: 'VBNetApp'
+          iis-app-pool: 'VBNetAppPool'
+          environment: ${{ steps.determine-env.outputs.environment }}
+
+      - name: Deployment summary
+        shell: pwsh
+        run: |
+          echo "### VB.NET Deployment Completed! 🚀" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ steps.determine-env.outputs.environment }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "**VM:** ${{ steps.keyvault.outputs.vm-name }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Resource Group:** ${{ steps.keyvault.outputs.vm-resource-group }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ steps.deploy-vm.outputs.deployment-status }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Application URL:** ${{ steps.deploy-vm.outputs.app-url }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Deployment Method:** Azure VM Run Command (no WinRM required)" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Notify on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Error "Deployment failed! Check the logs above for details."
+          echo "### ❌ Deployment Failed" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "Please check the workflow logs for error details." >> $env:GITHUB_STEP_SUMMARY

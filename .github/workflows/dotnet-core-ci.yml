@@ -1,0 +1,144 @@
+name: .NET Core CI for AKS
+
+on:
+  push:
+    branches: [ main, develop, master ]
+    paths:
+      - 'src/DotNetCoreApp/**'
+      - '.github/workflows/dotnet-core-ci.yml'
+      - '.github/actions/dotnet-build/**'
+      - '.github/actions/dotnet-test/**'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'src/DotNetCoreApp/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: 'dev'
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  PROJECT_PATH: 'src/DotNetCoreApp/DotNetCoreApp.sln'
+  TEST_PATH: 'src/DotNetCoreApp/DotNetCoreApp.Tests/DotNetCoreApp.Tests.csproj'
+  DOCKER_CONTEXT: 'src/DotNetCoreApp'
+  DOCKERFILE_PATH: 'src/DotNetCoreApp/DotNetCoreApp/Dockerfile'
+  IMAGE_NAME: 'dotnetcore-app'
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build .NET Application
+        uses: ./.github/actions/dotnet-build
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          project-path: ${{ env.PROJECT_PATH }}
+          configuration: 'Release'
+
+      - name: Run Tests
+        uses: ./.github/actions/dotnet-test
+        with:
+          test-path: ${{ env.TEST_PATH }}
+          configuration: 'Release'
+          collect-coverage: 'true'
+
+  build-and-push-to-acr:
+    name: Build Docker Image and Push to ACR
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build-push.outputs.digest }}
+      image-version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Fetch ACR Credentials from Key Vault
+        id: keyvault
+        uses: Azure/get-keyvault-secrets@v1
+        with:
+          keyvault: ${{ secrets.KEY_VAULT_NAME }}
+          secrets: 'acr-name, acr-username, acr-password'
+
+      - name: Generate Version
+        id: version
+        run: |
+          # Generate semantic version from git commit
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          VERSION="1.0.0-${SHORT_SHA}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Generated version: ${VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.keyvault.outputs.acr-name }}
+          username: ${{ steps.keyvault.outputs.acr-username }}
+          password: ${{ steps.keyvault.outputs.acr-password }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.keyvault.outputs.acr-name }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
+
+      - name: Build and push Docker image
+        id: build-push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ env.DOCKER_CONTEXT }}
+          file: ${{ env.DOCKERFILE_PATH }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.version.outputs.version }}
+
+      - name: Output Image Details
+        run: |
+          echo "### Docker Image Built Successfully! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Digest:** \`${{ steps.build-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Ready for AKS deployment via existing CD workflow** ✅" >> $GITHUB_STEP_SUMMARY

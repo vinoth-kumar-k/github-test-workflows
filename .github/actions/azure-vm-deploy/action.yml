@@ -1,0 +1,245 @@
+name: 'Deploy to Azure Windows VM'
+description: 'Deploys application to Azure Windows VM using Azure VM Run Command (no WinRM required)'
+author: 'Architecture Team'
+
+inputs:
+  keyvault-name:
+    description: 'Azure Key Vault name for fetching secrets'
+    required: true
+  vm-name:
+    description: 'Azure VM name'
+    required: true
+  resource-group:
+    description: 'Azure resource group name'
+    required: true
+  deployment-package-path:
+    description: 'Path to deployment package (zip file)'
+    required: true
+  deployment-script-path:
+    description: 'Path to deployment PowerShell script'
+    required: true
+  iis-site-name:
+    description: 'IIS site name'
+    required: false
+    default: 'Default Web Site'
+  iis-app-name:
+    description: 'IIS application name'
+    required: false
+    default: 'VBNetApp'
+  iis-app-pool:
+    description: 'IIS application pool name'
+    required: false
+    default: 'VBNetAppPool'
+  environment:
+    description: 'Deployment environment (dev/staging/prod)'
+    required: false
+    default: 'Production'
+
+outputs:
+  deployment-status:
+    description: 'Deployment status (success/failure)'
+    value: ${{ steps.deploy.outputs.status }}
+  app-url:
+    description: 'Application URL'
+    value: ${{ steps.get-vm-info.outputs.app-url }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Fetch secrets from Azure Key Vault
+      id: keyvault
+      uses: Azure/get-keyvault-secrets@v1
+      with:
+        keyvault: ${{ inputs.keyvault-name }}
+        secrets: 'vm-name, vm-resource-group, connection-strings, api-keys'
+
+    - name: Get VM Information
+      id: get-vm-info
+      shell: pwsh
+      run: |
+        Write-Host "Getting VM information..."
+
+        # Get VM details
+        $vmInfo = az vm show -d `
+          -g "${{ inputs.resource-group }}" `
+          -n "${{ inputs.vm-name }}" `
+          --query "{publicIp:publicIps, privateIp:privateIps, powerState:powerState}" `
+          -o json | ConvertFrom-Json
+
+        Write-Host "VM Name: ${{ inputs.vm-name }}"
+        Write-Host "Power State: $($vmInfo.powerState)"
+        Write-Host "Public IP: $($vmInfo.publicIp)"
+
+        # Set outputs
+        $appUrl = "http://$($vmInfo.publicIp)/${{ inputs.iis-app-name }}"
+        echo "app-url=$appUrl" >> $env:GITHUB_OUTPUT
+        echo "vm-public-ip=$($vmInfo.publicIp)" >> $env:GITHUB_OUTPUT
+
+        if ($vmInfo.powerState -ne "VM running") {
+          Write-Error "VM is not running. Current state: $($vmInfo.powerState)"
+          exit 1
+        }
+
+    - name: Prepare deployment package for upload
+      id: prepare
+      shell: pwsh
+      run: |
+        # Generate unique deployment ID
+        $deploymentId = "deploy-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        echo "deployment-id=$deploymentId" >> $env:GITHUB_OUTPUT
+
+        # Create temporary directory for deployment assets
+        $tempDir = Join-Path $env:RUNNER_TEMP $deploymentId
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+        # Copy deployment package
+        $packageName = Split-Path -Leaf "${{ inputs.deployment-package-path }}"
+        Copy-Item -Path "${{ inputs.deployment-package-path }}" -Destination "$tempDir\$packageName"
+
+        # Copy deployment script
+        $scriptName = Split-Path -Leaf "${{ inputs.deployment-script-path }}"
+        Copy-Item -Path "${{ inputs.deployment-script-path }}" -Destination "$tempDir\$scriptName"
+
+        echo "temp-dir=$tempDir" >> $env:GITHUB_OUTPUT
+        echo "package-name=$packageName" >> $env:GITHUB_OUTPUT
+        echo "script-name=$scriptName" >> $env:GITHUB_OUTPUT
+
+        Write-Host "Deployment assets prepared in: $tempDir"
+
+    - name: Upload deployment package to VM
+      shell: pwsh
+      run: |
+        Write-Host "Uploading deployment package to VM..."
+
+        # Create deployment directory on VM
+        $createDirScript = @'
+        if (-not (Test-Path "C:\Deploy")) {
+            New-Item -ItemType Directory -Path "C:\Deploy" -Force
+        }
+'@
+
+        az vm run-command invoke `
+          --resource-group "${{ inputs.resource-group }}" `
+          --name "${{ inputs.vm-name }}" `
+          --command-id RunPowerShellScript `
+          --scripts $createDirScript
+
+        Write-Host "Deployment directory created on VM"
+
+    - name: Execute deployment via Azure VM Run Command
+      id: deploy
+      shell: pwsh
+      run: |
+        Write-Host "Executing deployment on Azure VM via VM Run Command..."
+        Write-Host "VM: ${{ inputs.vm-name }}"
+        Write-Host "Resource Group: ${{ inputs.resource-group }}"
+        Write-Host "Package: ${{ steps.prepare.outputs.package-name }}"
+
+        # Read deployment script
+        $deployScript = Get-Content -Path "${{ inputs.deployment-script-path }}" -Raw
+
+        # Prepare deployment parameters
+        $packagePath = "C:\Deploy\${{ steps.prepare.outputs.package-name }}"
+        $siteName = "${{ inputs.iis-site-name }}"
+        $appName = "${{ inputs.iis-app-name }}"
+        $appPoolName = "${{ inputs.iis-app-pool }}"
+        $env = "${{ inputs.environment }}"
+
+        # Build configuration tokens (from Key Vault secrets)
+        $configTokens = @{
+          "CONNECTION_STRING" = "${{ steps.keyvault.outputs.connection-strings }}"
+          "API_KEY" = "${{ steps.keyvault.outputs.api-keys }}"
+        }
+
+        # Create wrapper script that calls deployment script with parameters
+        $wrapperScript = @"
+# Upload deployment package content (base64 encoded)
+`$packageContent = [System.Convert]::FromBase64String('$(
+  [Convert]::ToBase64String([System.IO.File]::ReadAllBytes("${{ inputs.deployment-package-path }}"))
+)')
+[System.IO.File]::WriteAllBytes('$packagePath', `$packageContent)
+
+Write-Host "Package uploaded to: $packagePath"
+
+# Execute deployment script
+$deployScript
+
+# Execute deployment function
+try {
+    & {
+        param(`$PackagePath, `$SiteName, `$AppName, `$AppPoolName, `$CreateBackup, `$Environment, `$ConfigTokens)
+        # Script content already loaded above
+    } -PackagePath '$packagePath' ``
+      -SiteName '$siteName' ``
+      -AppName '$appName' ``
+      -AppPoolName '$appPoolName' ``
+      -CreateBackup `$true ``
+      -Environment '$env' ``
+      -ConfigTokens @{ CONNECTION_STRING='$($configTokens.CONNECTION_STRING)'; API_KEY='$($configTokens.API_KEY)' }
+} catch {
+    Write-Error "Deployment failed: `$_"
+    exit 1
+}
+"@
+
+        # Execute deployment via VM Run Command
+        Write-Host "Invoking VM Run Command..."
+
+        $result = az vm run-command invoke `
+          --resource-group "${{ inputs.resource-group }}" `
+          --name "${{ inputs.vm-name }}" `
+          --command-id RunPowerShellScript `
+          --scripts $wrapperScript `
+          --output json | ConvertFrom-Json
+
+        # Check result
+        if ($result.value[0].message -match "Deployment Completed Successfully") {
+          Write-Host "✅ Deployment completed successfully!"
+          echo "status=success" >> $env:GITHUB_OUTPUT
+        } else {
+          Write-Error "Deployment may have failed. Check output below:"
+          Write-Host $result.value[0].message
+          echo "status=failure" >> $env:GITHUB_OUTPUT
+          exit 1
+        }
+
+        # Output deployment logs
+        Write-Host "`n========== Deployment Output =========="
+        Write-Host $result.value[0].message
+        Write-Host "======================================`n"
+
+    - name: Health check
+      shell: pwsh
+      run: |
+        Write-Host "Performing health check..."
+
+        $appUrl = "${{ steps.get-vm-info.outputs.app-url }}"
+        Write-Host "Application URL: $appUrl"
+
+        # Wait a few seconds for IIS to start
+        Start-Sleep -Seconds 5
+
+        try {
+          $response = Invoke-WebRequest -Uri $appUrl -UseBasicParsing -TimeoutSec 30
+          if ($response.StatusCode -eq 200) {
+            Write-Host "✅ Health check passed! Application is accessible."
+          } else {
+            Write-Warning "Health check returned status code: $($response.StatusCode)"
+          }
+        } catch {
+          Write-Warning "Health check failed: $_"
+          Write-Host "Application may still be starting up. Manual verification recommended."
+        }
+
+    - name: Output deployment summary
+      shell: pwsh
+      run: |
+        Write-Host "`n========== Deployment Summary =========="
+        Write-Host "VM: ${{ inputs.vm-name }}"
+        Write-Host "Resource Group: ${{ inputs.resource-group }}"
+        Write-Host "IIS Site: ${{ inputs.iis-site-name }}"
+        Write-Host "Application: ${{ inputs.iis-app-name }}"
+        Write-Host "Environment: ${{ inputs.environment }}"
+        Write-Host "Application URL: ${{ steps.get-vm-info.outputs.app-url }}"
+        Write-Host "Status: ${{ steps.deploy.outputs.status }}"
+        Write-Host "========================================"

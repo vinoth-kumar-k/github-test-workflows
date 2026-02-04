@@ -1,0 +1,74 @@
+name: 'Test .NET Application'
+description: 'Runs .NET tests with optional code coverage reporting'
+author: 'Architecture Team'
+
+inputs:
+  test-path:
+    description: 'Path to test project file or directory'
+    required: true
+  configuration:
+    description: 'Test configuration (Debug/Release)'
+    required: false
+    default: 'Release'
+  collect-coverage:
+    description: 'Collect code coverage data'
+    required: false
+    default: 'true'
+  verbosity:
+    description: 'Test output verbosity (quiet|minimal|normal|detailed|diagnostic)'
+    required: false
+    default: 'normal'
+
+outputs:
+  coverage-path:
+    description: 'Path to coverage report'
+    value: ${{ steps.test.outputs.coverage-path }}
+  test-results-path:
+    description: 'Path to test results'
+    value: ${{ steps.test.outputs.test-results-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run tests
+      id: test
+      shell: bash
+      run: |
+        # Create test results directory
+        mkdir -p TestResults
+
+        # Build test command
+        TEST_COMMAND="dotnet test ${{ inputs.test-path }} \
+          --configuration ${{ inputs.configuration }} \
+          --no-build \
+          --verbosity ${{ inputs.verbosity }} \
+          --logger \"trx;LogFileName=test-results.trx\" \
+          --results-directory TestResults"
+
+        # Add coverage collection if enabled
+        if [ "${{ inputs.collect-coverage }}" == "true" ]; then
+          TEST_COMMAND="$TEST_COMMAND --collect:\"XPlat Code Coverage\""
+        fi
+
+        # Execute tests
+        eval $TEST_COMMAND
+
+        # Set outputs
+        echo "test-results-path=TestResults" >> $GITHUB_OUTPUT
+        echo "coverage-path=TestResults/*/coverage.cobertura.xml" >> $GITHUB_OUTPUT
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results
+        path: TestResults/*.trx
+        retention-days: 30
+
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v4
+      if: always() && inputs.collect-coverage == 'true'
+      with:
+        name: coverage-reports
+        path: TestResults/*/coverage.cobertura.xml
+        retention-days: 30

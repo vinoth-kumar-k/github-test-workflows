@@ -1,0 +1,122 @@
+name: VB.NET CI
+
+on:
+  push:
+    branches: [ main, develop, master ]
+    paths:
+      - 'src/VBNetApp/**'
+      - '.github/workflows/vbnet-ci.yml'
+      - '.github/actions/msbuild-build/**'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'src/VBNetApp/**'
+  workflow_dispatch:
+
+env:
+  SOLUTION_PATH: 'src/VBNetApp/VBNetApp.sln'
+  BUILD_CONFIGURATION: 'Release'
+  BUILD_PLATFORM: 'Any CPU'
+
+jobs:
+  build:
+    name: Build VB.NET Application
+    runs-on: windows-latest
+
+    outputs:
+      package-path: ${{ steps.msbuild.outputs.package-path }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build with MSBuild
+        id: msbuild
+        uses: ./.github/actions/msbuild-build
+        with:
+          solution-path: ${{ env.SOLUTION_PATH }}
+          configuration: ${{ env.BUILD_CONFIGURATION }}
+          platform: ${{ env.BUILD_PLATFORM }}
+          create-package: 'true'
+
+      - name: Display build artifacts
+        shell: pwsh
+        run: |
+          Write-Host "Build completed successfully!"
+          Write-Host "Package path: ${{ steps.msbuild.outputs.package-path }}"
+          Get-ChildItem -Path publish -Recurse
+
+  test:
+    name: Run Tests
+    runs-on: windows-latest
+    needs: build
+    if: false  # Optional: Enable when tests are added
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup VSTest
+        uses: darenm/Setup-VSTest@v1
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+
+      - name: Run VSTest
+        shell: pwsh
+        run: |
+          # Add test execution logic here
+          Write-Host "Tests would run here (placeholder)"
+
+  package:
+    name: Create Deployment Package
+    runs-on: windows-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+
+      - name: Prepare deployment package
+        shell: pwsh
+        run: |
+          Write-Host "Deployment package is ready for CD workflow"
+
+          # Find the package
+          $package = Get-ChildItem -Path publish -Filter "*.zip" -File -Recurse | Select-Object -First 1
+
+          if ($package) {
+            Write-Host "Package found: $($package.FullName)"
+            Write-Host "Package size: $([math]::Round($package.Length / 1MB, 2)) MB"
+          } else {
+            Write-Error "Deployment package not found!"
+            exit 1
+          }
+
+      - name: Upload deployment package
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-package-${{ github.sha }}
+          path: publish/*.zip
+          retention-days: 90
+
+      - name: Build summary
+        shell: pwsh
+        run: |
+          echo "### VB.NET Build Completed! 🎉" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Configuration:** ${{ env.BUILD_CONFIGURATION }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Platform:** ${{ env.BUILD_PLATFORM }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Deployment package ready for CD workflow** ✅" >> $env:GITHUB_STEP_SUMMARY
