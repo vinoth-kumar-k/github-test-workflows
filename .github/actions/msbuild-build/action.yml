@@ -83,7 +83,7 @@ runs:
             "/p:WebPublishMethod=Package",
             "/p:PackageAsSingleFile=true",
             "/p:SkipInvalidConfigurations=true",
-            "/p:PackageLocation=`"$(Get-Location)\publish`""
+            "/p:PackageLocation=$(Get-Location)\publish"
           )
         }
 
