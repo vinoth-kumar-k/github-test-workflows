@@ -71,7 +71,7 @@ runs:
         $buildArgs = @(
           "${{ inputs.solution-path }}",
           "/p:Configuration=${{ inputs.configuration }}",
-          "/p:Platform=`"$platformParam`"",
+          "/p:Platform=$platformParam",
           "/maxcpucount",
           "/verbosity:minimal"
         )
