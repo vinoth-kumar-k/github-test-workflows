@@ -48,30 +48,40 @@ runs:
   steps:
     - name: Fetch secrets from Azure Key Vault
       id: keyvault
-      uses: Azure/get-keyvault-secrets@v1
-      with:
-        keyvault: ${{ inputs.keyvault-name }}
-        secrets: 'vm-name, vm-resource-group, connection-strings, api-keys'
+      shell: pwsh
+      env:
+        KEYVAULT_NAME: ${{ inputs.keyvault-name }}
+      run: |
+        $connectionStrings = az keyvault secret show --vault-name $env:KEYVAULT_NAME --name "connection-strings" --query "value" -o tsv
+        $apiKeys = az keyvault secret show --vault-name $env:KEYVAULT_NAME --name "api-keys" --query "value" -o tsv
+        echo "::add-mask::$connectionStrings"
+        echo "::add-mask::$apiKeys"
+        echo "connection-strings=$connectionStrings" >> $env:GITHUB_OUTPUT
+        echo "api-keys=$apiKeys" >> $env:GITHUB_OUTPUT
 
     - name: Get VM Information
       id: get-vm-info
       shell: pwsh
+      env:
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        VM_NAME: ${{ inputs.vm-name }}
+        IIS_APP_NAME: ${{ inputs.iis-app-name }}
       run: |
         Write-Host "Getting VM information..."
 
         # Get VM details
         $vmInfo = az vm show -d `
-          -g "${{ inputs.resource-group }}" `
-          -n "${{ inputs.vm-name }}" `
+          -g $env:RESOURCE_GROUP `
+          -n $env:VM_NAME `
           --query "{publicIp:publicIps, privateIp:privateIps, powerState:powerState}" `
           -o json | ConvertFrom-Json
 
-        Write-Host "VM Name: ${{ inputs.vm-name }}"
+        Write-Host "VM Name: $($env:VM_NAME)"
         Write-Host "Power State: $($vmInfo.powerState)"
         Write-Host "Public IP: $($vmInfo.publicIp)"
 
         # Set outputs
-        $appUrl = "http://$($vmInfo.publicIp)/${{ inputs.iis-app-name }}"
+        $appUrl = "http://$($vmInfo.publicIp)/$($env:IIS_APP_NAME)"
         echo "app-url=$appUrl" >> $env:GITHUB_OUTPUT
         echo "vm-public-ip=$($vmInfo.publicIp)" >> $env:GITHUB_OUTPUT
 
@@ -83,6 +93,9 @@ runs:
     - name: Prepare deployment package for upload
       id: prepare
       shell: pwsh
+      env:
+        DEPLOYMENT_PACKAGE_PATH: ${{ inputs.deployment-package-path }}
+        DEPLOYMENT_SCRIPT_PATH: ${{ inputs.deployment-script-path }}
       run: |
         # Generate unique deployment ID
         $deploymentId = "deploy-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
@@ -93,12 +106,12 @@ runs:
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
         # Copy deployment package
-        $packageName = Split-Path -Leaf "${{ inputs.deployment-package-path }}"
-        Copy-Item -Path "${{ inputs.deployment-package-path }}" -Destination "$tempDir\$packageName"
+        $packageName = Split-Path -Leaf $env:DEPLOYMENT_PACKAGE_PATH
+        Copy-Item -Path $env:DEPLOYMENT_PACKAGE_PATH -Destination "$tempDir\$packageName"
 
         # Copy deployment script
-        $scriptName = Split-Path -Leaf "${{ inputs.deployment-script-path }}"
-        Copy-Item -Path "${{ inputs.deployment-script-path }}" -Destination "$tempDir\$scriptName"
+        $scriptName = Split-Path -Leaf $env:DEPLOYMENT_SCRIPT_PATH
+        Copy-Item -Path $env:DEPLOYMENT_SCRIPT_PATH -Destination "$tempDir\$scriptName"
 
         echo "temp-dir=$tempDir" >> $env:GITHUB_OUTPUT
         echo "package-name=$packageName" >> $env:GITHUB_OUTPUT
@@ -108,6 +121,9 @@ runs:
 
     - name: Upload deployment package to VM
       shell: pwsh
+      env:
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        VM_NAME: ${{ inputs.vm-name }}
       run: |
         Write-Host "Uploading deployment package to VM..."
 
@@ -119,8 +135,8 @@ runs:
 '@
 
         az vm run-command invoke `
-          --resource-group "${{ inputs.resource-group }}" `
-          --name "${{ inputs.vm-name }}" `
+          --resource-group $env:RESOURCE_GROUP `
+          --name $env:VM_NAME `
           --command-id RunPowerShellScript `
           --scripts $createDirScript
 
@@ -129,33 +145,45 @@ runs:
     - name: Execute deployment via Azure VM Run Command
       id: deploy
       shell: pwsh
+      env:
+        VM_NAME: ${{ inputs.vm-name }}
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        DEPLOYMENT_SCRIPT_PATH: ${{ inputs.deployment-script-path }}
+        DEPLOYMENT_PACKAGE_PATH: ${{ inputs.deployment-package-path }}
+        PACKAGE_NAME: ${{ steps.prepare.outputs.package-name }}
+        IIS_SITE_NAME: ${{ inputs.iis-site-name }}
+        IIS_APP_NAME: ${{ inputs.iis-app-name }}
+        IIS_APP_POOL: ${{ inputs.iis-app-pool }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        KV_CONNECTION_STRINGS: ${{ steps.keyvault.outputs.connection-strings }}
+        KV_API_KEYS: ${{ steps.keyvault.outputs.api-keys }}
       run: |
         Write-Host "Executing deployment on Azure VM via VM Run Command..."
-        Write-Host "VM: ${{ inputs.vm-name }}"
-        Write-Host "Resource Group: ${{ inputs.resource-group }}"
-        Write-Host "Package: ${{ steps.prepare.outputs.package-name }}"
+        Write-Host "VM: $($env:VM_NAME)"
+        Write-Host "Resource Group: $($env:RESOURCE_GROUP)"
+        Write-Host "Package: $($env:PACKAGE_NAME)"
 
         # Read deployment script
-        $deployScript = Get-Content -Path "${{ inputs.deployment-script-path }}" -Raw
+        $deployScript = Get-Content -Path $env:DEPLOYMENT_SCRIPT_PATH -Raw
 
         # Prepare deployment parameters
-        $packagePath = "C:\Deploy\${{ steps.prepare.outputs.package-name }}"
-        $siteName = "${{ inputs.iis-site-name }}"
-        $appName = "${{ inputs.iis-app-name }}"
-        $appPoolName = "${{ inputs.iis-app-pool }}"
-        $env = "${{ inputs.environment }}"
+        $packagePath = "C:\Deploy\$($env:PACKAGE_NAME)"
+        $siteName = $env:IIS_SITE_NAME
+        $appName = $env:IIS_APP_NAME
+        $appPoolName = $env:IIS_APP_POOL
+        $deployEnv = $env:DEPLOY_ENVIRONMENT
 
         # Build configuration tokens (from Key Vault secrets)
         $configTokens = @{
-          "CONNECTION_STRING" = "${{ steps.keyvault.outputs.connection-strings }}"
-          "API_KEY" = "${{ steps.keyvault.outputs.api-keys }}"
+          "CONNECTION_STRING" = $env:KV_CONNECTION_STRINGS
+          "API_KEY" = $env:KV_API_KEYS
         }
 
         # Create wrapper script that calls deployment script with parameters
         $wrapperScript = @"
 # Upload deployment package content (base64 encoded)
 `$packageContent = [System.Convert]::FromBase64String('$(
-  [Convert]::ToBase64String([System.IO.File]::ReadAllBytes("${{ inputs.deployment-package-path }}"))
+  [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($env:DEPLOYMENT_PACKAGE_PATH))
 )')
 [System.IO.File]::WriteAllBytes('$packagePath', `$packageContent)
 
@@ -174,7 +202,7 @@ try {
       -AppName '$appName' ``
       -AppPoolName '$appPoolName' ``
       -CreateBackup `$true ``
-      -Environment '$env' ``
+      -Environment '$deployEnv' ``
       -ConfigTokens @{ CONNECTION_STRING='$($configTokens.CONNECTION_STRING)'; API_KEY='$($configTokens.API_KEY)' }
 } catch {
     Write-Error "Deployment failed: `$_"
@@ -186,15 +214,15 @@ try {
         Write-Host "Invoking VM Run Command..."
 
         $result = az vm run-command invoke `
-          --resource-group "${{ inputs.resource-group }}" `
-          --name "${{ inputs.vm-name }}" `
+          --resource-group $env:RESOURCE_GROUP `
+          --name $env:VM_NAME `
           --command-id RunPowerShellScript `
           --scripts $wrapperScript `
           --output json | ConvertFrom-Json
 
         # Check result
         if ($result.value[0].message -match "Deployment Completed Successfully") {
-          Write-Host "✅ Deployment completed successfully!"
+          Write-Host "Deployment completed successfully!"
           echo "status=success" >> $env:GITHUB_OUTPUT
         } else {
           Write-Error "Deployment may have failed. Check output below:"
@@ -210,19 +238,19 @@ try {
 
     - name: Health check
       shell: pwsh
+      env:
+        APP_URL: ${{ steps.get-vm-info.outputs.app-url }}
       run: |
         Write-Host "Performing health check..."
-
-        $appUrl = "${{ steps.get-vm-info.outputs.app-url }}"
-        Write-Host "Application URL: $appUrl"
+        Write-Host "Application URL: $($env:APP_URL)"
 
         # Wait a few seconds for IIS to start
         Start-Sleep -Seconds 5
 
         try {
-          $response = Invoke-WebRequest -Uri $appUrl -UseBasicParsing -TimeoutSec 30
+          $response = Invoke-WebRequest -Uri $env:APP_URL -UseBasicParsing -TimeoutSec 30
           if ($response.StatusCode -eq 200) {
-            Write-Host "✅ Health check passed! Application is accessible."
+            Write-Host "Health check passed! Application is accessible."
           } else {
             Write-Warning "Health check returned status code: $($response.StatusCode)"
           }
@@ -233,13 +261,21 @@ try {
 
     - name: Output deployment summary
       shell: pwsh
+      env:
+        VM_NAME: ${{ inputs.vm-name }}
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        IIS_SITE_NAME: ${{ inputs.iis-site-name }}
+        IIS_APP_NAME: ${{ inputs.iis-app-name }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        APP_URL: ${{ steps.get-vm-info.outputs.app-url }}
+        DEPLOY_STATUS: ${{ steps.deploy.outputs.status }}
       run: |
         Write-Host "`n========== Deployment Summary =========="
-        Write-Host "VM: ${{ inputs.vm-name }}"
-        Write-Host "Resource Group: ${{ inputs.resource-group }}"
-        Write-Host "IIS Site: ${{ inputs.iis-site-name }}"
-        Write-Host "Application: ${{ inputs.iis-app-name }}"
-        Write-Host "Environment: ${{ inputs.environment }}"
-        Write-Host "Application URL: ${{ steps.get-vm-info.outputs.app-url }}"
-        Write-Host "Status: ${{ steps.deploy.outputs.status }}"
+        Write-Host "VM: $($env:VM_NAME)"
+        Write-Host "Resource Group: $($env:RESOURCE_GROUP)"
+        Write-Host "IIS Site: $($env:IIS_SITE_NAME)"
+        Write-Host "Application: $($env:IIS_APP_NAME)"
+        Write-Host "Environment: $($env:DEPLOY_ENVIRONMENT)"
+        Write-Host "Application URL: $($env:APP_URL)"
+        Write-Host "Status: $($env:DEPLOY_STATUS)"
         Write-Host "========================================"

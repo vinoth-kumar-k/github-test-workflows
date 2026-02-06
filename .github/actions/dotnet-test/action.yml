@@ -33,25 +33,32 @@ runs:
     - name: Run tests
       id: test
       shell: bash
+      env:
+        TEST_PATH: ${{ inputs.test-path }}
+        CONFIGURATION: ${{ inputs.configuration }}
+        VERBOSITY: ${{ inputs.verbosity }}
+        COLLECT_COVERAGE: ${{ inputs.collect-coverage }}
       run: |
         # Create test results directory
         mkdir -p TestResults
 
-        # Build test command
-        TEST_COMMAND="dotnet test ${{ inputs.test-path }} \
-          --configuration ${{ inputs.configuration }} \
-          --no-build \
-          --verbosity ${{ inputs.verbosity }} \
-          --logger \"trx;LogFileName=test-results.trx\" \
-          --results-directory TestResults"
-
-        # Add coverage collection if enabled
-        if [ "${{ inputs.collect-coverage }}" == "true" ]; then
-          TEST_COMMAND="$TEST_COMMAND --collect:\"XPlat Code Coverage\""
+        # Execute tests with or without coverage collection
+        if [ "$COLLECT_COVERAGE" == "true" ]; then
+          dotnet test "$TEST_PATH" \
+            --configuration "$CONFIGURATION" \
+            --no-build \
+            --verbosity "$VERBOSITY" \
+            --logger "trx;LogFileName=test-results.trx" \
+            --results-directory TestResults \
+            --collect:"XPlat Code Coverage"
+        else
+          dotnet test "$TEST_PATH" \
+            --configuration "$CONFIGURATION" \
+            --no-build \
+            --verbosity "$VERBOSITY" \
+            --logger "trx;LogFileName=test-results.trx" \
+            --results-directory TestResults
         fi
-
-        # Execute tests
-        eval $TEST_COMMAND
 
         # Set outputs
         echo "test-results-path=TestResults" >> $GITHUB_OUTPUT

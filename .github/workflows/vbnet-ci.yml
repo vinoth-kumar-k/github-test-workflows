@@ -41,9 +41,11 @@ jobs:
 
       - name: Display build artifacts
         shell: pwsh
+        env:
+          PACKAGE_PATH: ${{ steps.msbuild.outputs.package-path }}
         run: |
           Write-Host "Build completed successfully!"
-          Write-Host "Package path: ${{ steps.msbuild.outputs.package-path }}"
+          Write-Host "Package path: $($env:PACKAGE_PATH)"
           Get-ChildItem -Path publish -Recurse
 
   test:
@@ -112,11 +114,13 @@ jobs:
 
       - name: Build summary
         shell: pwsh
+        env:
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           "### VB.NET Build Completed!" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Configuration:** ${{ env.BUILD_CONFIGURATION }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Platform:** ${{ env.BUILD_PLATFORM }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Commit:** ``${{ github.sha }}``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Configuration:** $($env:BUILD_CONFIGURATION)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Platform:** $($env:BUILD_PLATFORM)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Commit:** ``$($env:COMMIT_SHA)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**Deployment package ready for CD workflow**" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

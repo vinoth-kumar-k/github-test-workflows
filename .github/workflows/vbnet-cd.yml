@@ -41,17 +41,20 @@ jobs:
       - name: Determine deployment environment
         id: determine-env
         shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
         run: |
           # Determine environment based on trigger
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $env = "${{ github.event.inputs.environment }}"
+          if ($env:EVENT_NAME -eq "workflow_dispatch") {
+            $deployEnv = $env:INPUT_ENVIRONMENT
           } else {
             # Default to dev for workflow_run triggers
-            $env = "dev"
+            $deployEnv = "dev"
           }
 
-          echo "environment=$env" >> $env:GITHUB_OUTPUT
-          Write-Host "Deploying to environment: $env"
+          echo "environment=$deployEnv" >> $env:GITHUB_OUTPUT
+          Write-Host "Deploying to environment: $deployEnv"
 
       - name: Load environment configuration
         id: load-config
@@ -71,10 +74,16 @@ jobs:
 
       - name: Fetch secrets from Azure Key Vault
         id: keyvault
-        uses: Azure/get-keyvault-secrets@v1
-        with:
-          keyvault: ${{ secrets.KEY_VAULT_NAME }}
-          secrets: 'vm-name, vm-resource-group'
+        shell: pwsh
+        env:
+          KEY_VAULT_NAME: ${{ secrets.KEY_VAULT_NAME }}
+        run: |
+          $vmName = az keyvault secret show --vault-name $env:KEY_VAULT_NAME --name "vm-name" --query "value" -o tsv
+          $vmResourceGroup = az keyvault secret show --vault-name $env:KEY_VAULT_NAME --name "vm-resource-group" --query "value" -o tsv
+          echo "::add-mask::$vmName"
+          echo "::add-mask::$vmResourceGroup"
+          echo "vm-name=$vmName" >> $env:GITHUB_OUTPUT
+          echo "vm-resource-group=$vmResourceGroup" >> $env:GITHUB_OUTPUT
 
       - name: Download deployment package
         uses: actions/download-artifact@v4
@@ -118,15 +127,21 @@ jobs:
 
       - name: Deployment summary
         shell: pwsh
+        env:
+          DEPLOY_ENV: ${{ steps.determine-env.outputs.environment }}
+          VM_NAME: ${{ steps.keyvault.outputs.vm-name }}
+          VM_RESOURCE_GROUP: ${{ steps.keyvault.outputs.vm-resource-group }}
+          DEPLOY_STATUS: ${{ steps.deploy-vm.outputs.deployment-status }}
+          APP_URL: ${{ steps.deploy-vm.outputs.app-url }}
         run: |
           "### VB.NET Deployment Completed!" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Environment:** ${{ steps.determine-env.outputs.environment }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**VM:** ${{ steps.keyvault.outputs.vm-name }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Resource Group:** ${{ steps.keyvault.outputs.vm-resource-group }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Status:** ${{ steps.deploy-vm.outputs.deployment-status }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Environment:** $($env:DEPLOY_ENV)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**VM:** $($env:VM_NAME)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Resource Group:** $($env:VM_RESOURCE_GROUP)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Status:** $($env:DEPLOY_STATUS)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Application URL:** ${{ steps.deploy-vm.outputs.app-url }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Application URL:** $($env:APP_URL)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**Deployment Method:** Azure VM Run Command (no WinRM required)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 

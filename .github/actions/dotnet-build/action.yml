@@ -43,15 +43,20 @@ runs:
 
     - name: Restore dependencies
       shell: bash
-      run: dotnet restore ${{ inputs.project-path }}
+      env:
+        PROJECT_PATH: ${{ inputs.project-path }}
+      run: dotnet restore "$PROJECT_PATH"
 
     - name: Build
       id: build
       shell: bash
+      env:
+        PROJECT_PATH: ${{ inputs.project-path }}
+        CONFIGURATION: ${{ inputs.configuration }}
       run: |
-        dotnet build ${{ inputs.project-path }} \
-          --configuration ${{ inputs.configuration }} \
+        dotnet build "$PROJECT_PATH" \
+          --configuration "$CONFIGURATION" \
           --no-restore
 
         # Set output path (example - adjust based on project structure)
-        echo "artifact-path=${{ inputs.project-path }}/bin/${{ inputs.configuration }}" >> $GITHUB_OUTPUT
+        echo "artifact-path=$PROJECT_PATH/bin/$CONFIGURATION" >> $GITHUB_OUTPUT
