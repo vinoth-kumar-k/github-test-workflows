@@ -70,6 +70,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Determine deployment environment
+        id: determine-env
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+        run: |
+          if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
+            echo "environment=$INPUT_ENVIRONMENT" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Load environment configuration
+        id: load-config
+        uses: ./.github/actions/load-config
+        with:
+          environment: ${{ steps.determine-env.outputs.environment }}
+          app-type: dotnet-core
+
       - name: Azure Login
         uses: azure/login@v2
         with:
@@ -78,15 +97,12 @@ jobs:
       - name: Fetch ACR Credentials from Key Vault
         id: keyvault
         env:
-          KEY_VAULT_NAME: ${{ secrets.KEY_VAULT_NAME }}
+          KEY_VAULT_NAME: ${{ steps.load-config.outputs.key-vault-name }}
         run: |
-          ACR_NAME=$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name "acr-name" --query "value" -o tsv)
           ACR_USERNAME=$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name "acr-username" --query "value" -o tsv)
           ACR_PASSWORD=$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name "acr-password" --query "value" -o tsv)
-          echo "::add-mask::$ACR_NAME"
           echo "::add-mask::$ACR_USERNAME"
           echo "::add-mask::$ACR_PASSWORD"
-          echo "acr-name=$ACR_NAME" >> $GITHUB_OUTPUT
           echo "acr-username=$ACR_USERNAME" >> $GITHUB_OUTPUT
           echo "acr-password=$ACR_PASSWORD" >> $GITHUB_OUTPUT
 
@@ -107,7 +123,7 @@ jobs:
       - name: Log in to Azure Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ steps.keyvault.outputs.acr-name }}
+          registry: ${{ steps.load-config.outputs.acr-name }}
           username: ${{ steps.keyvault.outputs.acr-username }}
           password: ${{ steps.keyvault.outputs.acr-password }}
 
@@ -115,7 +131,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.keyvault.outputs.acr-name }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.load-config.outputs.acr-name }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch

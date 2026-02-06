@@ -58,32 +58,15 @@ jobs:
 
       - name: Load environment configuration
         id: load-config
-        shell: pwsh
-        run: |
-          # Load environment-specific configuration
-          $config = Get-Content -Path ".github/config/environments.yml" -Raw
-          Write-Host "Environment configuration loaded"
-
-          # Note: In a real workflow, you would parse YAML and extract values
-          # For this POC, we'll use Key Vault values directly
+        uses: ./.github/actions/load-config
+        with:
+          environment: ${{ steps.determine-env.outputs.environment }}
+          app-type: vbnet
 
       - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Fetch secrets from Azure Key Vault
-        id: keyvault
-        shell: pwsh
-        env:
-          KEY_VAULT_NAME: ${{ secrets.KEY_VAULT_NAME }}
-        run: |
-          $vmName = az keyvault secret show --vault-name $env:KEY_VAULT_NAME --name "vm-name" --query "value" -o tsv
-          $vmResourceGroup = az keyvault secret show --vault-name $env:KEY_VAULT_NAME --name "vm-resource-group" --query "value" -o tsv
-          echo "::add-mask::$vmName"
-          echo "::add-mask::$vmResourceGroup"
-          echo "vm-name=$vmName" >> $env:GITHUB_OUTPUT
-          echo "vm-resource-group=$vmResourceGroup" >> $env:GITHUB_OUTPUT
 
       - name: Download deployment package
         uses: actions/download-artifact@v4
@@ -115,22 +98,22 @@ jobs:
         id: deploy-vm
         uses: ./.github/actions/azure-vm-deploy
         with:
-          keyvault-name: ${{ secrets.KEY_VAULT_NAME }}
-          vm-name: ${{ steps.keyvault.outputs.vm-name }}
-          resource-group: ${{ steps.keyvault.outputs.vm-resource-group }}
+          keyvault-name: ${{ steps.load-config.outputs.key-vault-name }}
+          vm-name: ${{ steps.load-config.outputs.vm-name }}
+          resource-group: ${{ steps.load-config.outputs.resource-group }}
           deployment-package-path: ${{ env.PACKAGE_PATH }}
           deployment-script-path: ${{ env.DEPLOYMENT_SCRIPT_PATH }}
-          iis-site-name: 'Default Web Site'
-          iis-app-name: 'VBNetApp'
-          iis-app-pool: 'VBNetAppPool'
+          iis-site-name: ${{ steps.load-config.outputs.iis-site }}
+          iis-app-name: ${{ steps.load-config.outputs.iis-app-name }}
+          iis-app-pool: ${{ steps.load-config.outputs.iis-app-pool }}
           environment: ${{ steps.determine-env.outputs.environment }}
 
       - name: Deployment summary
         shell: pwsh
         env:
           DEPLOY_ENV: ${{ steps.determine-env.outputs.environment }}
-          VM_NAME: ${{ steps.keyvault.outputs.vm-name }}
-          VM_RESOURCE_GROUP: ${{ steps.keyvault.outputs.vm-resource-group }}
+          VM_NAME: ${{ steps.load-config.outputs.vm-name }}
+          VM_RESOURCE_GROUP: ${{ steps.load-config.outputs.resource-group }}
           DEPLOY_STATUS: ${{ steps.deploy-vm.outputs.deployment-status }}
           APP_URL: ${{ steps.deploy-vm.outputs.app-url }}
         run: |
