@@ -2,6 +2,7 @@
 # This file contains parameterized settings for different deployment environments
 
 dev:
+  key-vault-name: kv-dev
   dotnet-core:
     acr-name: myacrdev
     aks-cluster: aks-dev
@@ -15,6 +16,7 @@ dev:
     iis-app-pool: VBNetAppPool-Dev
 
 staging:
+  key-vault-name: kv-staging
   dotnet-core:
     acr-name: myacrstaging
     aks-cluster: aks-staging
@@ -28,6 +30,7 @@ staging:
     iis-app-pool: VBNetAppPool-Staging
 
 prod:
+  key-vault-name: kv-prod
   dotnet-core:
     acr-name: myacrprod
     aks-cluster: aks-prod

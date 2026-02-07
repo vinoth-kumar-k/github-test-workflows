@@ -58,26 +58,30 @@ runs:
     - name: Restore NuGet packages
       if: inputs.restore-nuget == 'true'
       shell: pwsh
-      run: nuget restore "${{ inputs.solution-path }}"
+      env:
+        SOLUTION_PATH: ${{ inputs.solution-path }}
+      run: nuget restore "$env:SOLUTION_PATH"
 
     - name: Build with MSBuild
       id: build
       shell: pwsh
+      env:
+        SOLUTION_PATH: ${{ inputs.solution-path }}
+        CONFIGURATION: ${{ inputs.configuration }}
+        PLATFORM: ${{ inputs.platform }}
+        CREATE_PACKAGE: ${{ inputs.create-package }}
       run: |
-        # Determine platform parameter format
-        $platformParam = "${{ inputs.platform }}"
-
         # Build arguments
         $buildArgs = @(
-          "${{ inputs.solution-path }}",
-          "/p:Configuration=${{ inputs.configuration }}",
-          "/p:Platform=$platformParam",
+          $env:SOLUTION_PATH,
+          "/p:Configuration=$($env:CONFIGURATION)",
+          "/p:Platform=$($env:PLATFORM)",
           "/maxcpucount",
           "/verbosity:minimal"
         )
 
         # Add Web Deploy package creation if enabled
-        if ("${{ inputs.create-package }}" -eq "true") {
+        if ($env:CREATE_PACKAGE -eq "true") {
           $buildArgs += @(
             "/p:DeployOnBuild=true",
             "/p:WebPublishMethod=Package",
@@ -99,8 +103,8 @@ runs:
         }
 
         # Set outputs
-        $solutionDir = Split-Path -Parent "${{ inputs.solution-path }}"
-        echo "build-output=$solutionDir\bin\${{ inputs.configuration }}" >> $env:GITHUB_OUTPUT
+        $solutionDir = Split-Path -Parent $env:SOLUTION_PATH
+        echo "build-output=$solutionDir\bin\$($env:CONFIGURATION)" >> $env:GITHUB_OUTPUT
 
         # Find package if created
         if (Test-Path "publish") {

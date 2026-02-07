@@ -70,6 +70,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Determine deployment environment
+        id: determine-env
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+        run: |
+          if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
+            echo "environment=$INPUT_ENVIRONMENT" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Load environment configuration
+        id: load-config
+        uses: ./.github/actions/load-config
+        with:
+          environment: ${{ steps.determine-env.outputs.environment }}
+          app-type: dotnet-core
+
       - name: Azure Login
         uses: azure/login@v2
         with:
@@ -77,16 +96,23 @@ jobs:
 
       - name: Fetch ACR Credentials from Key Vault
         id: keyvault
-        uses: Azure/get-keyvault-secrets@v1
-        with:
-          keyvault: ${{ secrets.KEY_VAULT_NAME }}
-          secrets: 'acr-name, acr-username, acr-password'
+        env:
+          KEY_VAULT_NAME: ${{ steps.load-config.outputs.key-vault-name }}
+        run: |
+          ACR_USERNAME=$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name "acr-username" --query "value" -o tsv)
+          ACR_PASSWORD=$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name "acr-password" --query "value" -o tsv)
+          echo "::add-mask::$ACR_USERNAME"
+          echo "::add-mask::$ACR_PASSWORD"
+          echo "acr-username=$ACR_USERNAME" >> $GITHUB_OUTPUT
+          echo "acr-password=$ACR_PASSWORD" >> $GITHUB_OUTPUT
 
       - name: Generate Version
         id: version
+        env:
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           # Generate semantic version from git commit
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
           VERSION="1.0.0-${SHORT_SHA}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Generated version: ${VERSION}"
@@ -97,7 +123,7 @@ jobs:
       - name: Log in to Azure Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ steps.keyvault.outputs.acr-name }}
+          registry: ${{ steps.load-config.outputs.acr-name }}
           username: ${{ steps.keyvault.outputs.acr-username }}
           password: ${{ steps.keyvault.outputs.acr-password }}
 
@@ -105,7 +131,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.keyvault.outputs.acr-name }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.load-config.outputs.acr-name }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
@@ -129,16 +155,20 @@ jobs:
             VERSION=${{ steps.version.outputs.version }}
 
       - name: Output Image Details
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_DIGEST: ${{ steps.build-push.outputs.digest }}
+          IMAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo "### Docker Image Built Successfully! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Image Built Successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "$IMAGE_TAGS" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image Digest:** \`${{ steps.build-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Digest:** \`$IMAGE_DIGEST\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`$IMAGE_VERSION\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Ready for AKS deployment via existing CD workflow** ✅" >> $GITHUB_STEP_SUMMARY
+          echo "**Ready for AKS deployment via existing CD workflow**" >> $GITHUB_STEP_SUMMARY

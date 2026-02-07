@@ -1,0 +1,101 @@
+name: 'Load Environment Configuration'
+description: 'Parses environments.yml and outputs environment-specific configuration values'
+author: 'Architecture Team'
+
+inputs:
+  environment:
+    description: 'Target environment (dev/staging/prod)'
+    required: true
+  app-type:
+    description: 'Application type section to read (dotnet-core/vbnet)'
+    required: true
+  config-path:
+    description: 'Path to environments.yml config file'
+    required: false
+    default: '.github/config/environments.yml'
+
+outputs:
+  # Environment-level
+  key-vault-name:
+    description: 'Azure Key Vault name for the environment'
+    value: ${{ steps.parse.outputs.key-vault-name }}
+  # VB.NET specific
+  vm-name:
+    description: 'Azure VM name'
+    value: ${{ steps.parse.outputs.vm-name }}
+  resource-group:
+    description: 'Azure resource group'
+    value: ${{ steps.parse.outputs.resource-group }}
+  iis-site:
+    description: 'IIS site name'
+    value: ${{ steps.parse.outputs.iis-site }}
+  iis-app-name:
+    description: 'IIS application name'
+    value: ${{ steps.parse.outputs.iis-app-name }}
+  iis-app-pool:
+    description: 'IIS application pool name'
+    value: ${{ steps.parse.outputs.iis-app-pool }}
+  # .NET Core specific
+  acr-name:
+    description: 'Azure Container Registry name'
+    value: ${{ steps.parse.outputs.acr-name }}
+  aks-cluster:
+    description: 'AKS cluster name'
+    value: ${{ steps.parse.outputs.aks-cluster }}
+  namespace:
+    description: 'Kubernetes namespace'
+    value: ${{ steps.parse.outputs.namespace }}
+  image-tag-suffix:
+    description: 'Docker image tag suffix'
+    value: ${{ steps.parse.outputs.image-tag-suffix }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Parse environment configuration
+      id: parse
+      shell: python
+      env:
+        CONFIG_PATH: ${{ inputs.config-path }}
+        TARGET_ENV: ${{ inputs.environment }}
+        APP_TYPE: ${{ inputs.app-type }}
+      run: |
+        import os
+
+        try:
+            import yaml
+        except ImportError:
+            import subprocess, sys
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pyyaml', '-q'])
+            import yaml
+
+        config_path = os.environ['CONFIG_PATH']
+        env_name = os.environ['TARGET_ENV']
+        app_type = os.environ['APP_TYPE']
+
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
+        env_config = config.get(env_name)
+        if not env_config:
+            available = ', '.join(config.keys())
+            raise ValueError(f"Environment '{env_name}' not found in {config_path}. Available: {available}")
+
+        app_config = env_config.get(app_type)
+        if not app_config:
+            available = ', '.join(k for k in env_config if isinstance(env_config[k], dict))
+            raise ValueError(f"App type '{app_type}' not found under '{env_name}'. Available: {available}")
+
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
+            # Write environment-level values (non-dict entries like key-vault-name)
+            for key, value in env_config.items():
+                if not isinstance(value, dict):
+                    gh_out.write(f"{key}={value}\n")
+                    print(f"  {key}={value}")
+
+            # Write app-type-specific values
+            for key, value in app_config.items():
+                gh_out.write(f"{key}={value}\n")
+                print(f"  {key}={value}")
+
+        print(f"Loaded configuration for {env_name}/{app_type}")
