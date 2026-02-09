@@ -1,0 +1,310 @@
+name: .NET Core CD to AKS
+
+on:
+  workflow_run:
+    workflows: [".NET Core CI for AKS"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: 'dev'
+      image-tag:
+        description: 'Image tag override (e.g. main-abc1234). Leave empty to use latest from main branch.'
+        required: false
+        type: string
+
+env:
+  IMAGE_NAME: dotnetcore-app
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Deploy to Dev
+  # ---------------------------------------------------------------------------
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' || github.event.inputs.environment == 'staging' || github.event.inputs.environment == 'prod'))
+    environment: dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment configuration
+        id: config
+        uses: ./.github/actions/load-config
+        with:
+          environment: dev
+          app-type: dotnet-core
+
+      - name: Determine image tag
+        id: image
+        env:
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image-tag }}
+          ACR_NAME: ${{ steps.config.outputs.acr-name }}
+          GITHUB_SHA_VAL: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [ -n "$INPUT_IMAGE_TAG" ]; then
+            TAG="$INPUT_IMAGE_TAG"
+          else
+            SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
+            TAG="main-${SHORT_SHA}"
+          fi
+          FULL_IMAGE="${ACR_NAME}/${IMAGE_NAME}:${TAG}"
+          echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Image: ${FULL_IMAGE}"
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS Context
+        uses: azure/aks-set-context@v4
+        with:
+          cluster-name: ${{ steps.config.outputs.aks-cluster }}
+          resource-group: ${{ steps.config.outputs.resource-group }}
+
+      - name: Create namespace
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          ENVIRONMENT: dev
+        run: |
+          envsubst < k8s/dotnetcoreapp/namespace.yaml | kubectl apply -f -
+
+      - name: Deploy manifests
+        env:
+          IMAGE: ${{ steps.image.outputs.full-image }}
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          ENVIRONMENT: dev
+        run: |
+          envsubst < k8s/dotnetcoreapp/deployment.yaml | kubectl apply -f -
+          envsubst < k8s/dotnetcoreapp/service.yaml | kubectl apply -f -
+
+      - name: Wait for rollout
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+        run: |
+          kubectl rollout status deployment/dotnetcoreapp -n "$NAMESPACE" --timeout=300s
+
+      - name: Deployment summary
+        if: always()
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          IMAGE: ${{ steps.image.outputs.full-image }}
+        run: |
+          echo "### Dev Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** \`${NAMESPACE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pod Status:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n "$NAMESPACE" -l app=dotnetcoreapp -o wide 2>&1 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get svc -n "$NAMESPACE" -l app=dotnetcoreapp 2>&1 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Deploy to Staging
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    if: >
+      (github.event_name == 'workflow_run') ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'staging' || github.event.inputs.environment == 'prod'))
+    environment: staging
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment configuration
+        id: config
+        uses: ./.github/actions/load-config
+        with:
+          environment: staging
+          app-type: dotnet-core
+
+      - name: Determine image tag
+        id: image
+        env:
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image-tag }}
+          ACR_NAME: ${{ steps.config.outputs.acr-name }}
+          GITHUB_SHA_VAL: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [ -n "$INPUT_IMAGE_TAG" ]; then
+            TAG="$INPUT_IMAGE_TAG"
+          else
+            SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
+            TAG="main-${SHORT_SHA}"
+          fi
+          FULL_IMAGE="${ACR_NAME}/${IMAGE_NAME}:${TAG}"
+          echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Image: ${FULL_IMAGE}"
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS Context
+        uses: azure/aks-set-context@v4
+        with:
+          cluster-name: ${{ steps.config.outputs.aks-cluster }}
+          resource-group: ${{ steps.config.outputs.resource-group }}
+
+      - name: Create namespace
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          ENVIRONMENT: staging
+        run: |
+          envsubst < k8s/dotnetcoreapp/namespace.yaml | kubectl apply -f -
+
+      - name: Deploy manifests
+        env:
+          IMAGE: ${{ steps.image.outputs.full-image }}
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          ENVIRONMENT: staging
+        run: |
+          envsubst < k8s/dotnetcoreapp/deployment.yaml | kubectl apply -f -
+          envsubst < k8s/dotnetcoreapp/service.yaml | kubectl apply -f -
+
+      - name: Wait for rollout
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+        run: |
+          kubectl rollout status deployment/dotnetcoreapp -n "$NAMESPACE" --timeout=300s
+
+      - name: Deployment summary
+        if: always()
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          IMAGE: ${{ steps.image.outputs.full-image }}
+        run: |
+          echo "### Staging Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** \`${NAMESPACE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pod Status:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n "$NAMESPACE" -l app=dotnetcoreapp -o wide 2>&1 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get svc -n "$NAMESPACE" -l app=dotnetcoreapp 2>&1 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Deploy to Prod
+  # ---------------------------------------------------------------------------
+  deploy-prod:
+    name: Deploy to Prod
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: >
+      (github.event_name == 'workflow_run') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'prod')
+    environment: prod
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment configuration
+        id: config
+        uses: ./.github/actions/load-config
+        with:
+          environment: prod
+          app-type: dotnet-core
+
+      - name: Determine image tag
+        id: image
+        env:
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image-tag }}
+          ACR_NAME: ${{ steps.config.outputs.acr-name }}
+          GITHUB_SHA_VAL: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [ -n "$INPUT_IMAGE_TAG" ]; then
+            TAG="$INPUT_IMAGE_TAG"
+          else
+            SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
+            TAG="main-${SHORT_SHA}"
+          fi
+          FULL_IMAGE="${ACR_NAME}/${IMAGE_NAME}:${TAG}"
+          echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Image: ${FULL_IMAGE}"
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS Context
+        uses: azure/aks-set-context@v4
+        with:
+          cluster-name: ${{ steps.config.outputs.aks-cluster }}
+          resource-group: ${{ steps.config.outputs.resource-group }}
+
+      - name: Create namespace
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          ENVIRONMENT: prod
+        run: |
+          envsubst < k8s/dotnetcoreapp/namespace.yaml | kubectl apply -f -
+
+      - name: Deploy manifests
+        env:
+          IMAGE: ${{ steps.image.outputs.full-image }}
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          ENVIRONMENT: prod
+        run: |
+          envsubst < k8s/dotnetcoreapp/deployment.yaml | kubectl apply -f -
+          envsubst < k8s/dotnetcoreapp/service.yaml | kubectl apply -f -
+
+      - name: Wait for rollout
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+        run: |
+          kubectl rollout status deployment/dotnetcoreapp -n "$NAMESPACE" --timeout=300s
+
+      - name: Deployment summary
+        if: always()
+        env:
+          NAMESPACE: ${{ steps.config.outputs.namespace }}
+          IMAGE: ${{ steps.image.outputs.full-image }}
+        run: |
+          echo "### Prod Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** \`${NAMESPACE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pod Status:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n "$NAMESPACE" -l app=dotnetcoreapp -o wide 2>&1 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get svc -n "$NAMESPACE" -l app=dotnetcoreapp 2>&1 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY

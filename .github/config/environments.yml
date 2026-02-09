@@ -4,8 +4,9 @@
 dev:
   key-vault-name: kv-dev
   dotnet-core:
-    acr-name: myacrdev
-    aks-cluster: aks-dev
+    acr-name: akssandboxacr.azurecr.io
+    aks-cluster: aks-sandbox-cluster
+    resource-group: rg-vinoth
     namespace: dev
     image-tag-suffix: dev
   vbnet:
@@ -18,8 +19,9 @@ dev:
 staging:
   key-vault-name: kv-staging
   dotnet-core:
-    acr-name: myacrstaging
-    aks-cluster: aks-staging
+    acr-name: myacrstaging           # placeholder
+    aks-cluster: aks-staging          # placeholder
+    resource-group: rg-staging        # placeholder
     namespace: staging
     image-tag-suffix: staging
   vbnet:
@@ -32,8 +34,9 @@ staging:
 prod:
   key-vault-name: kv-prod
   dotnet-core:
-    acr-name: myacrprod
-    aks-cluster: aks-prod
+    acr-name: myacrprod              # placeholder
+    aks-cluster: aks-prod            # placeholder
+    resource-group: rg-prod          # placeholder
     namespace: production
     image-tag-suffix: latest
   vbnet:
