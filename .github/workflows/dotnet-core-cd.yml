@@ -83,6 +83,16 @@ jobs:
         with:
           kubelogin-version: 'latest'
 
+      - name: Convert kubeconfig to use SP auth
+        env:
+          SP_CLIENT_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
+          SP_CLIENT_SECRET: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
+        run: |
+          kubelogin convert-kubeconfig -l spn
+          echo "AAD_SERVICE_PRINCIPAL_CLIENT_ID=$SP_CLIENT_ID" >> $GITHUB_ENV
+          echo "::add-mask::$SP_CLIENT_SECRET"
+          echo "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=$SP_CLIENT_SECRET" >> $GITHUB_ENV
+
       - name: Create namespace
         env:
           NAMESPACE: ${{ steps.config.outputs.namespace }}
@@ -185,6 +195,16 @@ jobs:
         with:
           kubelogin-version: 'latest'
 
+      - name: Convert kubeconfig to use SP auth
+        env:
+          SP_CLIENT_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
+          SP_CLIENT_SECRET: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
+        run: |
+          kubelogin convert-kubeconfig -l spn
+          echo "AAD_SERVICE_PRINCIPAL_CLIENT_ID=$SP_CLIENT_ID" >> $GITHUB_ENV
+          echo "::add-mask::$SP_CLIENT_SECRET"
+          echo "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=$SP_CLIENT_SECRET" >> $GITHUB_ENV
+
       - name: Create namespace
         env:
           NAMESPACE: ${{ steps.config.outputs.namespace }}
@@ -286,6 +306,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           kubelogin-version: 'latest'
+
+      - name: Convert kubeconfig to use SP auth
+        env:
+          SP_CLIENT_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
+          SP_CLIENT_SECRET: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
+        run: |
+          kubelogin convert-kubeconfig -l spn
+          echo "AAD_SERVICE_PRINCIPAL_CLIENT_ID=$SP_CLIENT_ID" >> $GITHUB_ENV
+          echo "::add-mask::$SP_CLIENT_SECRET"
+          echo "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=$SP_CLIENT_SECRET" >> $GITHUB_ENV
 
       - name: Create namespace
         env:
