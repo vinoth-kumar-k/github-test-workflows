@@ -94,12 +94,6 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Log in to Azure Container Registry
-        env:
-          ACR_NAME: ${{ steps.load-config.outputs.acr-name }}
-        run: |
-          az acr login --name "${ACR_NAME%%.*}"
-
       - name: Generate Version
         id: version
         env:
@@ -113,6 +107,12 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure Container Registry
+        env:
+          ACR_NAME: ${{ steps.load-config.outputs.acr-name }}
+        run: |
+          az acr login --name "${ACR_NAME%%.*}"
 
       - name: Extract Docker metadata
         id: meta
