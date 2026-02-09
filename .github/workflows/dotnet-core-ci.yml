@@ -94,17 +94,11 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Fetch ACR Credentials from Key Vault
-        id: keyvault
+      - name: Log in to Azure Container Registry
         env:
-          KEY_VAULT_NAME: ${{ steps.load-config.outputs.key-vault-name }}
+          ACR_NAME: ${{ steps.load-config.outputs.acr-name }}
         run: |
-          ACR_USERNAME=$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name "acr-username" --query "value" -o tsv)
-          ACR_PASSWORD=$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name "acr-password" --query "value" -o tsv)
-          echo "::add-mask::$ACR_USERNAME"
-          echo "::add-mask::$ACR_PASSWORD"
-          echo "acr-username=$ACR_USERNAME" >> $GITHUB_OUTPUT
-          echo "acr-password=$ACR_PASSWORD" >> $GITHUB_OUTPUT
+          az acr login --name "${ACR_NAME%%.*}"
 
       - name: Generate Version
         id: version
@@ -119,13 +113,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ steps.load-config.outputs.acr-name }}
-          username: ${{ steps.keyvault.outputs.acr-username }}
-          password: ${{ steps.keyvault.outputs.acr-password }}
 
       - name: Extract Docker metadata
         id: meta
