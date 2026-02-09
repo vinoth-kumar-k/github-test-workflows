@@ -76,6 +76,11 @@ jobs:
           cluster-name: ${{ steps.config.outputs.aks-cluster }}
           resource-group: ${{ steps.config.outputs.resource-group }}
 
+      - name: Set up kubelogin
+        uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: 'latest'
+
       - name: Create namespace
         env:
           NAMESPACE: ${{ steps.config.outputs.namespace }}
@@ -171,6 +176,11 @@ jobs:
           cluster-name: ${{ steps.config.outputs.aks-cluster }}
           resource-group: ${{ steps.config.outputs.resource-group }}
 
+      - name: Set up kubelogin
+        uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: 'latest'
+
       - name: Create namespace
         env:
           NAMESPACE: ${{ steps.config.outputs.namespace }}
@@ -265,6 +275,11 @@ jobs:
         with:
           cluster-name: ${{ steps.config.outputs.aks-cluster }}
           resource-group: ${{ steps.config.outputs.resource-group }}
+
+      - name: Set up kubelogin
+        uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: 'latest'
 
       - name: Create namespace
         env:
