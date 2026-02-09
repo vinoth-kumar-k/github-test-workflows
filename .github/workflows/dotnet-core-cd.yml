@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: [".NET Core CI for AKS"]
     types: [completed]
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
     inputs:
       environment:
