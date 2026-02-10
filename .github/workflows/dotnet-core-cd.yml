@@ -93,13 +93,6 @@ jobs:
           echo "::add-mask::$SP_CLIENT_SECRET"
           echo "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=$SP_CLIENT_SECRET" >> $GITHUB_ENV
 
-      - name: Create namespace
-        env:
-          NAMESPACE: ${{ steps.config.outputs.namespace }}
-          ENVIRONMENT: dev
-        run: |
-          envsubst < k8s/dotnetcoreapp/namespace.yaml | kubectl apply -f -
-
       - name: Deploy manifests
         env:
           IMAGE: ${{ steps.image.outputs.full-image }}
@@ -205,13 +198,6 @@ jobs:
           echo "::add-mask::$SP_CLIENT_SECRET"
           echo "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=$SP_CLIENT_SECRET" >> $GITHUB_ENV
 
-      - name: Create namespace
-        env:
-          NAMESPACE: ${{ steps.config.outputs.namespace }}
-          ENVIRONMENT: staging
-        run: |
-          envsubst < k8s/dotnetcoreapp/namespace.yaml | kubectl apply -f -
-
       - name: Deploy manifests
         env:
           IMAGE: ${{ steps.image.outputs.full-image }}
@@ -316,13 +302,6 @@ jobs:
           echo "AAD_SERVICE_PRINCIPAL_CLIENT_ID=$SP_CLIENT_ID" >> $GITHUB_ENV
           echo "::add-mask::$SP_CLIENT_SECRET"
           echo "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=$SP_CLIENT_SECRET" >> $GITHUB_ENV
-
-      - name: Create namespace
-        env:
-          NAMESPACE: ${{ steps.config.outputs.namespace }}
-          ENVIRONMENT: prod
-        run: |
-          envsubst < k8s/dotnetcoreapp/namespace.yaml | kubectl apply -f -
 
       - name: Deploy manifests
         env:
