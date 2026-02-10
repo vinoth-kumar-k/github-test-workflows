@@ -1,0 +1,21 @@
+# Example Terraform variables for VB.NET Windows VM
+# Copy this file to terraform.tfvars and fill in your values
+
+resource_group_name = "rg-vinoth"
+location            = "Malaysia West"
+
+vm_name  = "vm-vbnet-dev"
+vm_size  = "Standard_B2s_v2"  # 2 vCPUs, 4GB RAM - minimum for Windows
+
+admin_username = "azureadmin"
+admin_password = "YourSecurePassword123!"  # Change this!
+
+# Restrict RDP access to specific IPs (recommended)
+# Use ["*"] for any IP (not recommended for production)
+allowed_rdp_ips = ["YOUR_PUBLIC_IP/32"]
+
+tags = {
+  Environment = "dev"
+  Project     = "vbnet-poc"
+  ManagedBy   = "terraform"
+}

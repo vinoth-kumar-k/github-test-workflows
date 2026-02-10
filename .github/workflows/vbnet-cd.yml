@@ -7,60 +7,32 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Target environment'
-        required: true
-        type: choice
-        options:
-          - dev
-          - staging
-          - prod
-        default: 'dev'
-      artifact-run-id:
-        description: 'CI run ID to deploy from (leave empty to use latest)'
+      run-id:
+        description: 'CI workflow run ID to deploy from (leave empty for latest successful)'
         required: false
+        type: string
 
 env:
   DEPLOYMENT_SCRIPT_PATH: 'src/VBNetApp/deployment/deploy.ps1'
 
 jobs:
-  deploy:
-    name: Deploy to Azure Windows VM
+  deploy-dev:
+    name: Deploy to Dev
     runs-on: windows-latest
-    environment:
-      name: ${{ github.event.inputs.environment || 'dev' }}
-      url: ${{ steps.deploy-vm.outputs.app-url }}
-
-    # Only run if CI workflow succeeded or manual dispatch
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: >
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch')
+    environment: dev
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Determine deployment environment
-        id: determine-env
-        shell: pwsh
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
-        run: |
-          # Determine environment based on trigger
-          if ($env:EVENT_NAME -eq "workflow_dispatch") {
-            $deployEnv = $env:INPUT_ENVIRONMENT
-          } else {
-            # Default to dev for workflow_run triggers
-            $deployEnv = "dev"
-          }
-
-          echo "environment=$deployEnv" >> $env:GITHUB_OUTPUT
-          Write-Host "Deploying to environment: $deployEnv"
-
       - name: Load environment configuration
-        id: load-config
+        id: config
         uses: ./.github/actions/load-config
         with:
-          environment: ${{ steps.determine-env.outputs.environment }}
+          environment: dev
           app-type: vbnet
 
       - name: Azure Login
@@ -68,71 +40,232 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Download deployment package
-        uses: actions/download-artifact@v4
+      - name: Download deployment package from CI workflow
+        uses: dawidd6/action-download-artifact@v3
         with:
+          workflow: vbnet-ci.yml
+          run_id: ${{ github.event.inputs.run-id || github.event.workflow_run.id }}
           name: deployment-package-${{ github.event.workflow_run.head_sha || github.sha }}
           path: ./deployment-artifacts
-          # Note: For workflow_run, this downloads from the triggering workflow
-          # For workflow_dispatch, you may need to specify run-id
+          if_no_artifact_found: warn
+          search_artifacts: true
 
-      - name: Verify deployment package
+      - name: Find deployment package
+        id: find-package
         shell: pwsh
         run: |
-          Write-Host "Verifying deployment package..."
-          $package = Get-ChildItem -Path "./deployment-artifacts" -Filter "*.zip" -File | Select-Object -First 1
+          Write-Host "Looking for deployment package..."
+
+          # Try to find the package
+          $package = Get-ChildItem -Path "./deployment-artifacts" -Filter "*.zip" -File -Recurse -ErrorAction SilentlyContinue |
+                     Select-Object -First 1
 
           if (-not $package) {
-            Write-Error "Deployment package not found!"
+            # Try alternate artifact naming
+            $package = Get-ChildItem -Path "." -Filter "VBNetApp*.zip" -File -Recurse -ErrorAction SilentlyContinue |
+                       Select-Object -First 1
+          }
+
+          if ($package) {
+            Write-Host "Package found: $($package.FullName)"
+            Write-Host "Package size: $([math]::Round($package.Length / 1MB, 2)) MB"
+            echo "package-path=$($package.FullName)" >> $env:GITHUB_OUTPUT
+            echo "package-found=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "No deployment package found!"
+            echo "package-found=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Verify VM is running
+        id: vm-check
+        shell: pwsh
+        env:
+          VM_NAME: ${{ steps.config.outputs.vm-name }}
+          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
+        run: |
+          Write-Host "Checking VM status..."
+
+          $vmInfo = az vm show -d `
+            -g $env:RESOURCE_GROUP `
+            -n $env:VM_NAME `
+            --query "{powerState:powerState, publicIp:publicIps}" `
+            -o json | ConvertFrom-Json
+
+          Write-Host "VM: $($env:VM_NAME)"
+          Write-Host "Power State: $($vmInfo.powerState)"
+          Write-Host "Public IP: $($vmInfo.publicIp)"
+
+          if ($vmInfo.powerState -ne "VM running") {
+            Write-Error "VM is not running! Current state: $($vmInfo.powerState)"
             exit 1
           }
 
-          Write-Host "Package found: $($package.Name)"
-          Write-Host "Package size: $([math]::Round($package.Length / 1MB, 2)) MB"
-          Write-Host "Full path: $($package.FullName)"
+          $appUrl = "http://$($vmInfo.publicIp)/$($env:IIS_APP_NAME)"
+          echo "public-ip=$($vmInfo.publicIp)" >> $env:GITHUB_OUTPUT
+          echo "app-url=$appUrl" >> $env:GITHUB_OUTPUT
+        env:
+          IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
 
-          # Set package path for next step
-          echo "PACKAGE_PATH=$($package.FullName)" >> $env:GITHUB_ENV
-
-      - name: Deploy to Azure VM
-        id: deploy-vm
-        uses: ./.github/actions/azure-vm-deploy
-        with:
-          keyvault-name: ${{ steps.load-config.outputs.key-vault-name }}
-          vm-name: ${{ steps.load-config.outputs.vm-name }}
-          resource-group: ${{ steps.load-config.outputs.resource-group }}
-          deployment-package-path: ${{ env.PACKAGE_PATH }}
-          deployment-script-path: ${{ env.DEPLOYMENT_SCRIPT_PATH }}
-          iis-site-name: ${{ steps.load-config.outputs.iis-site }}
-          iis-app-name: ${{ steps.load-config.outputs.iis-app-name }}
-          iis-app-pool: ${{ steps.load-config.outputs.iis-app-pool }}
-          environment: ${{ steps.determine-env.outputs.environment }}
-
-      - name: Deployment summary
+      - name: Upload package to VM and deploy
+        if: steps.find-package.outputs.package-found == 'true'
+        id: deploy
         shell: pwsh
         env:
-          DEPLOY_ENV: ${{ steps.determine-env.outputs.environment }}
-          VM_NAME: ${{ steps.load-config.outputs.vm-name }}
-          VM_RESOURCE_GROUP: ${{ steps.load-config.outputs.resource-group }}
-          DEPLOY_STATUS: ${{ steps.deploy-vm.outputs.deployment-status }}
-          APP_URL: ${{ steps.deploy-vm.outputs.app-url }}
+          VM_NAME: ${{ steps.config.outputs.vm-name }}
+          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
+          PACKAGE_PATH: ${{ steps.find-package.outputs.package-path }}
+          IIS_SITE_NAME: ${{ steps.config.outputs.iis-site }}
+          IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
+          IIS_APP_POOL: ${{ steps.config.outputs.iis-app-pool }}
         run: |
-          "### VB.NET Deployment Completed!" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Environment:** $($env:DEPLOY_ENV)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**VM:** $($env:VM_NAME)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Resource Group:** $($env:VM_RESOURCE_GROUP)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Status:** $($env:DEPLOY_STATUS)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Application URL:** $($env:APP_URL)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Deployment Method:** Azure VM Run Command (no WinRM required)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          Write-Host "Deploying to Azure VM via Run Command..."
+          Write-Host "VM: $($env:VM_NAME)"
+          Write-Host "Resource Group: $($env:RESOURCE_GROUP)"
+          Write-Host "Package: $($env:PACKAGE_PATH)"
 
-      - name: Notify on failure
-        if: failure()
+          # Read the deployment script
+          $deployScript = Get-Content -Path $env:DEPLOYMENT_SCRIPT_PATH -Raw
+
+          # Read and base64 encode the package
+          Write-Host "Encoding deployment package..."
+          $packageBytes = [System.IO.File]::ReadAllBytes($env:PACKAGE_PATH)
+          $packageBase64 = [Convert]::ToBase64String($packageBytes)
+          Write-Host "Package size: $([math]::Round($packageBytes.Length / 1MB, 2)) MB"
+
+          # Create the deployment script that will run on the VM
+          $vmScript = @"
+          # Decode and save the deployment package
+          `$packagePath = 'C:\Deploy\VBNetApp.zip'
+          `$packageBytes = [Convert]::FromBase64String('$packageBase64')
+          [System.IO.File]::WriteAllBytes(`$packagePath, `$packageBytes)
+          Write-Host "Package saved to: `$packagePath"
+
+          # Import IIS module
+          Import-Module WebAdministration -ErrorAction Stop
+
+          # Define deployment parameters
+          `$appPoolName = '$($env:IIS_APP_POOL)'
+          `$siteName = '$($env:IIS_SITE_NAME)'
+          `$appName = '$($env:IIS_APP_NAME)'
+          `$deployPath = "C:\inetpub\wwwroot\`$appName"
+
+          # Create app pool if it doesn't exist
+          if (-not (Test-Path "IIS:\AppPools\`$appPoolName")) {
+              Write-Host "Creating application pool: `$appPoolName"
+              New-WebAppPool -Name `$appPoolName
+              Set-ItemProperty "IIS:\AppPools\`$appPoolName" -Name managedRuntimeVersion -Value "v4.0"
+          }
+
+          # Stop app pool
+          if ((Get-WebAppPoolState -Name `$appPoolName).Value -eq "Started") {
+              Write-Host "Stopping application pool..."
+              Stop-WebAppPool -Name `$appPoolName
+              Start-Sleep -Seconds 3
+          }
+
+          # Create deployment directory
+          if (-not (Test-Path `$deployPath)) {
+              New-Item -Path `$deployPath -ItemType Directory -Force | Out-Null
+          }
+
+          # Extract package
+          Write-Host "Extracting deployment package..."
+          Expand-Archive -Path `$packagePath -DestinationPath `$deployPath -Force
+
+          # Create/update IIS application
+          `$appPath = "IIS:\Sites\`$siteName\`$appName"
+          if (-not (Test-Path `$appPath)) {
+              Write-Host "Creating IIS application..."
+              New-WebApplication -Name `$appName -Site `$siteName -PhysicalPath `$deployPath -ApplicationPool `$appPoolName
+          } else {
+              Write-Host "Updating IIS application..."
+              Set-ItemProperty `$appPath -Name physicalPath -Value `$deployPath
+          }
+
+          # Start app pool
+          Write-Host "Starting application pool..."
+          Start-WebAppPool -Name `$appPoolName
+
+          Write-Host "Deployment Completed Successfully!"
+          "@
+
+          # Execute via Azure VM Run Command
+          Write-Host "Executing deployment on VM..."
+
+          $result = az vm run-command invoke `
+            --resource-group $env:RESOURCE_GROUP `
+            --name $env:VM_NAME `
+            --command-id RunPowerShellScript `
+            --scripts $vmScript `
+            --output json 2>&1
+
+          $resultObj = $result | ConvertFrom-Json
+
+          # Check for success
+          $stdout = $resultObj.value | Where-Object { $_.code -eq "ProvisioningState/succeeded" } | Select-Object -ExpandProperty message
+          $stderr = $resultObj.value | Where-Object { $_.code -like "*StdErr*" } | Select-Object -ExpandProperty message
+
+          Write-Host "`n========== Deployment Output =========="
+          Write-Host $stdout
+          if ($stderr) {
+            Write-Host "`n========== Errors =========="
+            Write-Host $stderr
+          }
+          Write-Host "======================================`n"
+
+          if ($stdout -match "Deployment Completed Successfully") {
+            Write-Host "Deployment successful!"
+            echo "status=success" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Error "Deployment may have failed. Check output above."
+            echo "status=failure" >> $env:GITHUB_OUTPUT
+            exit 1
+          }
+
+      - name: Health check
+        if: steps.deploy.outputs.status == 'success'
         shell: pwsh
+        env:
+          APP_URL: ${{ steps.vm-check.outputs.app-url }}
         run: |
-          Write-Error "Deployment failed! Check the logs above for details."
-          "### Deployment Failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          Write-Host "Performing health check..."
+          Write-Host "Application URL: $($env:APP_URL)"
+
+          Start-Sleep -Seconds 10
+
+          try {
+            $response = Invoke-WebRequest -Uri $env:APP_URL -UseBasicParsing -TimeoutSec 30
+            if ($response.StatusCode -eq 200) {
+              Write-Host "Health check passed! Application is accessible."
+            } else {
+              Write-Warning "Health check returned status code: $($response.StatusCode)"
+            }
+          } catch {
+            Write-Warning "Health check failed: $_"
+            Write-Host "Application may still be starting up."
+          }
+
+      - name: Deployment summary
+        if: always()
+        shell: pwsh
+        env:
+          VM_NAME: ${{ steps.config.outputs.vm-name }}
+          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
+          IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
+          APP_URL: ${{ steps.vm-check.outputs.app-url }}
+          DEPLOY_STATUS: ${{ steps.deploy.outputs.status }}
+          PACKAGE_FOUND: ${{ steps.find-package.outputs.package-found }}
+        run: |
+          "### VB.NET Deployment Summary" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "Please check the workflow logs for error details." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**VM:** ``$($env:VM_NAME)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Resource Group:** ``$($env:RESOURCE_GROUP)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Application:** ``$($env:IIS_APP_NAME)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ($env:PACKAGE_FOUND -eq "true") {
+            "**Deployment Status:** $($env:DEPLOY_STATUS)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            "**Application URL:** $($env:APP_URL)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+            "**Status:** No deployment package found" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }

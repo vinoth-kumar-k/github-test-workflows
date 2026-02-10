@@ -10,8 +10,8 @@ dev:
     namespace: dev
     image-tag-suffix: dev
   vbnet:
-    vm-name: vm-dev
-    resource-group: rg-dev
+    vm-name: vm-vbnet-dev
+    resource-group: rg-vinoth
     iis-site: Default Web Site
     iis-app-name: VBNetApp-Dev
     iis-app-pool: VBNetAppPool-Dev
