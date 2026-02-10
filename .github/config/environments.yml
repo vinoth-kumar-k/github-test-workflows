@@ -12,6 +12,8 @@ dev:
   vbnet:
     vm-name: vm-vbnet-dev
     resource-group: rg-vinoth
+    storage-account: stvbnetdeploy    # Storage account for deployment staging
+    storage-container: deployments
     iis-site: Default Web Site
     iis-app-name: VBNetApp-Dev
     iis-app-pool: VBNetAppPool-Dev

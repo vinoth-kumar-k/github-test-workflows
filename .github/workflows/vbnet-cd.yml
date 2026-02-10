@@ -12,9 +12,6 @@ on:
         required: false
         type: string
 
-env:
-  DEPLOYMENT_SCRIPT_PATH: 'src/VBNetApp/deployment/deploy.ps1'
-
 jobs:
   deploy-dev:
     name: Deploy to Dev
@@ -105,45 +102,103 @@ jobs:
           echo "public-ip=$($vmInfo.publicIp)" >> $env:GITHUB_OUTPUT
           echo "app-url=$appUrl" >> $env:GITHUB_OUTPUT
 
-      - name: Upload package to VM and deploy
+      - name: Upload package to blob storage
+        if: steps.find-package.outputs.package-found == 'true'
+        id: upload-blob
+        shell: pwsh
+        env:
+          STORAGE_ACCOUNT: ${{ steps.config.outputs.storage-account }}
+          STORAGE_CONTAINER: ${{ steps.config.outputs.storage-container }}
+          PACKAGE_PATH: ${{ steps.find-package.outputs.package-path }}
+        run: |
+          Write-Host "Uploading deployment package to Azure Blob Storage..."
+          Write-Host "Storage Account: $($env:STORAGE_ACCOUNT)"
+          Write-Host "Container: $($env:STORAGE_CONTAINER)"
+
+          # Generate unique blob name
+          $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+          $blobName = "vbnetapp-$timestamp.zip"
+
+          # Create container if it doesn't exist
+          az storage container create `
+            --account-name $env:STORAGE_ACCOUNT `
+            --name $env:STORAGE_CONTAINER `
+            --auth-mode login `
+            --only-show-errors 2>&1 | Out-Null
+
+          # Upload the package
+          Write-Host "Uploading package as: $blobName"
+          az storage blob upload `
+            --account-name $env:STORAGE_ACCOUNT `
+            --container-name $env:STORAGE_CONTAINER `
+            --name $blobName `
+            --file $env:PACKAGE_PATH `
+            --auth-mode login `
+            --overwrite
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to upload package to blob storage"
+            exit 1
+          }
+
+          # Generate SAS URL valid for 30 minutes
+          $expiry = (Get-Date).AddMinutes(30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
+          $sasUrl = az storage blob generate-sas `
+            --account-name $env:STORAGE_ACCOUNT `
+            --container-name $env:STORAGE_CONTAINER `
+            --name $blobName `
+            --permissions r `
+            --expiry $expiry `
+            --auth-mode login `
+            --as-user `
+            --full-uri `
+            --output tsv
+
+          Write-Host "Package uploaded successfully"
+          Write-Host "SAS URL generated (expires in 30 minutes)"
+
+          echo "blob-name=$blobName" >> $env:GITHUB_OUTPUT
+          echo "sas-url=$sasUrl" >> $env:GITHUB_OUTPUT
+
+      - name: Deploy to VM
         if: steps.find-package.outputs.package-found == 'true'
         id: deploy
         shell: pwsh
         env:
           VM_NAME: ${{ steps.config.outputs.vm-name }}
           RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
-          PACKAGE_PATH: ${{ steps.find-package.outputs.package-path }}
           IIS_SITE_NAME: ${{ steps.config.outputs.iis-site }}
           IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
           IIS_APP_POOL: ${{ steps.config.outputs.iis-app-pool }}
+          PACKAGE_URL: ${{ steps.upload-blob.outputs.sas-url }}
         run: |
           Write-Host "Deploying to Azure VM via Run Command..."
           Write-Host "VM: $($env:VM_NAME)"
           Write-Host "Resource Group: $($env:RESOURCE_GROUP)"
-          Write-Host "Package: $($env:PACKAGE_PATH)"
 
-          # Read and base64 encode the package
-          Write-Host "Encoding deployment package..."
-          $packageBytes = [System.IO.File]::ReadAllBytes($env:PACKAGE_PATH)
-          $packageBase64 = [Convert]::ToBase64String($packageBytes)
-          Write-Host "Package size: $([math]::Round($packageBytes.Length / 1MB, 2)) MB"
-
-          # Create the deployment script that will run on the VM
+          # Create the deployment script
           $vmScript = @'
-          param($PackageBase64, $AppPoolName, $SiteName, $AppName)
+          param($PackageUrl, $AppPoolName, $SiteName, $AppName)
 
           try {
-              # Decode and save the deployment package
-              $packagePath = 'C:\Deploy\VBNetApp.zip'
-              $packageBytes = [Convert]::FromBase64String($PackageBase64)
-              [System.IO.File]::WriteAllBytes($packagePath, $packageBytes)
-              Write-Host "Package saved to: $packagePath"
+              # Create deploy directory
+              $deployDir = 'C:\Deploy'
+              if (-not (Test-Path $deployDir)) {
+                  New-Item -Path $deployDir -ItemType Directory -Force | Out-Null
+              }
+
+              # Download the package
+              $packagePath = Join-Path $deployDir 'VBNetApp.zip'
+              Write-Host "Downloading package from Azure Blob Storage..."
+              [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+              Invoke-WebRequest -Uri $PackageUrl -OutFile $packagePath -UseBasicParsing
+              Write-Host "Package downloaded to: $packagePath"
 
               # Import IIS module
               Import-Module WebAdministration -ErrorAction Stop
 
               # Define paths
-              $deployPath = "C:\inetpub\wwwroot\$AppName"
+              $wwwRoot = "C:\inetpub\wwwroot\$AppName"
 
               # Create app pool if it doesn't exist
               if (-not (Test-Path "IIS:\AppPools\$AppPoolName")) {
@@ -160,26 +215,25 @@ jobs:
                   Start-Sleep -Seconds 3
               }
 
-              # Create deployment directory
-              if (-not (Test-Path $deployPath)) {
-                  New-Item -Path $deployPath -ItemType Directory -Force | Out-Null
+              # Create or clean deployment directory
+              if (-not (Test-Path $wwwRoot)) {
+                  New-Item -Path $wwwRoot -ItemType Directory -Force | Out-Null
               } else {
-                  # Clean existing files
-                  Remove-Item -Path "$deployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
+                  Remove-Item -Path "$wwwRoot\*" -Recurse -Force -ErrorAction SilentlyContinue
               }
 
               # Extract package
               Write-Host "Extracting deployment package..."
-              Expand-Archive -Path $packagePath -DestinationPath $deployPath -Force
+              Expand-Archive -Path $packagePath -DestinationPath $wwwRoot -Force
 
               # Create/update IIS application
               $appPath = "IIS:\Sites\$SiteName\$AppName"
               if (-not (Test-Path $appPath)) {
                   Write-Host "Creating IIS application..."
-                  New-WebApplication -Name $AppName -Site $SiteName -PhysicalPath $deployPath -ApplicationPool $AppPoolName
+                  New-WebApplication -Name $AppName -Site $SiteName -PhysicalPath $wwwRoot -ApplicationPool $AppPoolName
               } else {
                   Write-Host "Updating IIS application..."
-                  Set-ItemProperty $appPath -Name physicalPath -Value $deployPath
+                  Set-ItemProperty $appPath -Name physicalPath -Value $wwwRoot
                   Set-ItemProperty $appPath -Name applicationPool -Value $AppPoolName
               }
 
@@ -198,19 +252,14 @@ jobs:
           $scriptPath = Join-Path $env:RUNNER_TEMP "deploy-script.ps1"
           $vmScript | Out-File -FilePath $scriptPath -Encoding UTF8
 
-          # Write base64 package to temp file (to avoid command line length limits)
-          $base64Path = Join-Path $env:RUNNER_TEMP "package-base64.txt"
-          $packageBase64 | Out-File -FilePath $base64Path -Encoding UTF8 -NoNewline
-
           Write-Host "Executing deployment on VM..."
 
-          # Use az vm run-command with script file
           $result = az vm run-command invoke `
             --resource-group $env:RESOURCE_GROUP `
             --name $env:VM_NAME `
             --command-id RunPowerShellScript `
             --scripts "@$scriptPath" `
-            --parameters "PackageBase64=$(Get-Content $base64Path -Raw)" "AppPoolName=$($env:IIS_APP_POOL)" "SiteName=$($env:IIS_SITE_NAME)" "AppName=$($env:IIS_APP_NAME)" `
+            --parameters "PackageUrl=$($env:PACKAGE_URL)" "AppPoolName=$($env:IIS_APP_POOL)" "SiteName=$($env:IIS_SITE_NAME)" "AppName=$($env:IIS_APP_NAME)" `
             --output json 2>&1
 
           Write-Host "Raw result: $result"
@@ -218,7 +267,6 @@ jobs:
           try {
               $resultObj = $result | ConvertFrom-Json
 
-              # Extract stdout and stderr
               $stdout = ""
               $stderr = ""
               foreach ($item in $resultObj.value) {
@@ -248,6 +296,23 @@ jobs:
               echo "status=failure" >> $env:GITHUB_OUTPUT
               exit 1
           }
+
+      - name: Cleanup blob storage
+        if: always() && steps.upload-blob.outputs.blob-name
+        shell: pwsh
+        env:
+          STORAGE_ACCOUNT: ${{ steps.config.outputs.storage-account }}
+          STORAGE_CONTAINER: ${{ steps.config.outputs.storage-container }}
+          BLOB_NAME: ${{ steps.upload-blob.outputs.blob-name }}
+        run: |
+          Write-Host "Cleaning up deployment package from blob storage..."
+          az storage blob delete `
+            --account-name $env:STORAGE_ACCOUNT `
+            --container-name $env:STORAGE_CONTAINER `
+            --name $env:BLOB_NAME `
+            --auth-mode login `
+            --only-show-errors 2>&1 | Out-Null
+          Write-Host "Cleanup complete"
 
       - name: Health check
         if: steps.deploy.outputs.status == 'success'

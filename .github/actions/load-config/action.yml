@@ -35,6 +35,12 @@ outputs:
   iis-app-pool:
     description: 'IIS application pool name'
     value: ${{ steps.parse.outputs.iis-app-pool }}
+  storage-account:
+    description: 'Azure storage account for deployment staging'
+    value: ${{ steps.parse.outputs.storage-account }}
+  storage-container:
+    description: 'Azure storage container for deployment packages'
+    value: ${{ steps.parse.outputs.storage-container }}
   # .NET Core specific
   acr-name:
     description: 'Azure Container Registry name'
