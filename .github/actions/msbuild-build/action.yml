@@ -14,10 +14,6 @@ inputs:
     description: 'Build platform (Any CPU, x86, x64)'
     required: false
     default: 'Any CPU'
-  msbuild-version:
-    description: 'MSBuild version'
-    required: false
-    default: 'latest'
   restore-nuget:
     description: 'Restore NuGet packages before build'
     required: false
@@ -40,8 +36,6 @@ runs:
   steps:
     - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v2
-      with:
-        msbuild-version: ${{ inputs.msbuild-version }}
 
     - name: Setup NuGet
       uses: NuGet/setup-nuget@v2
