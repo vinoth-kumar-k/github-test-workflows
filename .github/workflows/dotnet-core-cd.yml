@@ -53,12 +53,13 @@ jobs:
           INPUT_IMAGE_TAG: ${{ github.event.inputs.image-tag }}
           ACR_NAME: ${{ steps.config.outputs.acr-name }}
           GITHUB_SHA_VAL: ${{ github.event.workflow_run.head_sha || github.sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
         run: |
           if [ -n "$INPUT_IMAGE_TAG" ]; then
             TAG="$INPUT_IMAGE_TAG"
           else
             SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
-            TAG="main-${SHORT_SHA}"
+            TAG="${BRANCH}-${SHORT_SHA}"
           fi
           FULL_IMAGE="${ACR_NAME}/${IMAGE_NAME}:${TAG}"
           echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
@@ -158,12 +159,13 @@ jobs:
           INPUT_IMAGE_TAG: ${{ github.event.inputs.image-tag }}
           ACR_NAME: ${{ steps.config.outputs.acr-name }}
           GITHUB_SHA_VAL: ${{ github.event.workflow_run.head_sha || github.sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
         run: |
           if [ -n "$INPUT_IMAGE_TAG" ]; then
             TAG="$INPUT_IMAGE_TAG"
           else
             SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
-            TAG="main-${SHORT_SHA}"
+            TAG="${BRANCH}-${SHORT_SHA}"
           fi
           FULL_IMAGE="${ACR_NAME}/${IMAGE_NAME}:${TAG}"
           echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
@@ -263,12 +265,13 @@ jobs:
           INPUT_IMAGE_TAG: ${{ github.event.inputs.image-tag }}
           ACR_NAME: ${{ steps.config.outputs.acr-name }}
           GITHUB_SHA_VAL: ${{ github.event.workflow_run.head_sha || github.sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
         run: |
           if [ -n "$INPUT_IMAGE_TAG" ]; then
             TAG="$INPUT_IMAGE_TAG"
           else
             SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
-            TAG="main-${SHORT_SHA}"
+            TAG="${BRANCH}-${SHORT_SHA}"
           fi
           FULL_IMAGE="${ACR_NAME}/${IMAGE_NAME}:${TAG}"
           echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
