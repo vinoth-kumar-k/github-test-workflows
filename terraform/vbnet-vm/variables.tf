@@ -64,6 +64,12 @@ variable "allowed_rdp_ips" {
   default     = ["*"]
 }
 
+variable "storage_account_name" {
+  description = "Name of the storage account for deployment staging (must be globally unique, 3-24 lowercase letters/numbers)"
+  type        = string
+  default     = "stvbnetdeploy"
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

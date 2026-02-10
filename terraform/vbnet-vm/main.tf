@@ -170,6 +170,31 @@ resource "azurerm_virtual_machine_extension" "iis" {
   tags = var.tags
 }
 
+# Storage Account for deployment package staging
+resource "azurerm_storage_account" "deploy" {
+  name                     = var.storage_account_name
+  resource_group_name      = data.azurerm_resource_group.main.name
+  location                 = data.azurerm_resource_group.main.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  min_tls_version          = "TLS1_2"
+
+  blob_properties {
+    delete_retention_policy {
+      days = 7
+    }
+  }
+
+  tags = var.tags
+}
+
+# Storage container for deployment packages
+resource "azurerm_storage_container" "deployments" {
+  name                  = "deployments"
+  storage_account_name  = azurerm_storage_account.deploy.name
+  container_access_type = "private"
+}
+
 # Role assignment for VM to allow Run Command operations from GitHub Actions
 # The Service Principal used by GitHub Actions needs Contributor access to the VM
 # This is typically handled at the resource group level

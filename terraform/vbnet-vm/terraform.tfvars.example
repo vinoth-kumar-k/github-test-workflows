@@ -14,6 +14,9 @@ admin_password = "YourSecurePassword123!"  # Change this!
 # Use ["*"] for any IP (not recommended for production)
 allowed_rdp_ips = ["YOUR_PUBLIC_IP/32"]
 
+# Storage account for deployment package staging (must be globally unique)
+storage_account_name = "stvbnetdeploy"  # Change if name is taken
+
 tags = {
   Environment = "dev"
   Project     = "vbnet-poc"

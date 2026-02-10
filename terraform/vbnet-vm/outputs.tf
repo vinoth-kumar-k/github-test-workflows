@@ -43,14 +43,26 @@ output "iis_default_site_url" {
   value       = "http://${azurerm_public_ip.main.ip_address}"
 }
 
+output "storage_account_name" {
+  description = "Name of the storage account for deployment staging"
+  value       = azurerm_storage_account.deploy.name
+}
+
+output "storage_container_name" {
+  description = "Name of the storage container for deployments"
+  value       = azurerm_storage_container.deployments.name
+}
+
 # Outputs for GitHub Actions environment config
 output "github_actions_config" {
   description = "Values to add to environments.yml for GitHub Actions"
   value = {
-    vm_name        = azurerm_windows_virtual_machine.main.name
-    resource_group = data.azurerm_resource_group.main.name
-    iis_site       = "Default Web Site"
-    iis_app_name   = "VBNetApp-Dev"
-    iis_app_pool   = "VBNetAppPool-Dev"
+    vm_name           = azurerm_windows_virtual_machine.main.name
+    resource_group    = data.azurerm_resource_group.main.name
+    storage_account   = azurerm_storage_account.deploy.name
+    storage_container = azurerm_storage_container.deployments.name
+    iis_site          = "Default Web Site"
+    iis_app_name      = "VBNetApp-Dev"
+    iis_app_pool      = "VBNetAppPool-Dev"
   }
 }
