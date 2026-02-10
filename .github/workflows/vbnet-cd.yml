@@ -110,10 +110,24 @@ jobs:
           STORAGE_ACCOUNT: ${{ steps.config.outputs.storage-account }}
           STORAGE_CONTAINER: ${{ steps.config.outputs.storage-container }}
           PACKAGE_PATH: ${{ steps.find-package.outputs.package-path }}
+          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
         run: |
           Write-Host "Uploading deployment package to Azure Blob Storage..."
           Write-Host "Storage Account: $($env:STORAGE_ACCOUNT)"
           Write-Host "Container: $($env:STORAGE_CONTAINER)"
+
+          # Get storage account key (more reliable than --auth-mode login for SAS)
+          $accountKey = az storage account keys list `
+            --resource-group $env:RESOURCE_GROUP `
+            --account-name $env:STORAGE_ACCOUNT `
+            --query "[0].value" `
+            --output tsv
+
+          if (-not $accountKey) {
+            Write-Error "Failed to get storage account key"
+            exit 1
+          }
+          Write-Host "Retrieved storage account key"
 
           # Generate unique blob name
           $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -122,37 +136,58 @@ jobs:
           # Create container if it doesn't exist
           az storage container create `
             --account-name $env:STORAGE_ACCOUNT `
+            --account-key $accountKey `
             --name $env:STORAGE_CONTAINER `
-            --auth-mode login `
             --only-show-errors 2>&1 | Out-Null
 
           # Upload the package
           Write-Host "Uploading package as: $blobName"
-          az storage blob upload `
+          $uploadResult = az storage blob upload `
             --account-name $env:STORAGE_ACCOUNT `
+            --account-key $accountKey `
             --container-name $env:STORAGE_CONTAINER `
             --name $blobName `
             --file $env:PACKAGE_PATH `
-            --auth-mode login `
-            --overwrite
+            --overwrite `
+            --output json 2>&1
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to upload package to blob storage"
+            Write-Error "Failed to upload package to blob storage: $uploadResult"
             exit 1
           }
+          Write-Host "Upload completed"
+
+          # Verify blob exists
+          $blobExists = az storage blob exists `
+            --account-name $env:STORAGE_ACCOUNT `
+            --account-key $accountKey `
+            --container-name $env:STORAGE_CONTAINER `
+            --name $blobName `
+            --query "exists" `
+            --output tsv
+
+          if ($blobExists -ne "true") {
+            Write-Error "Blob verification failed - blob does not exist after upload"
+            exit 1
+          }
+          Write-Host "Blob verified: $blobName exists"
 
           # Generate SAS URL valid for 30 minutes
           $expiry = (Get-Date).AddMinutes(30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
           $sasUrl = az storage blob generate-sas `
             --account-name $env:STORAGE_ACCOUNT `
+            --account-key $accountKey `
             --container-name $env:STORAGE_CONTAINER `
             --name $blobName `
             --permissions r `
             --expiry $expiry `
-            --auth-mode login `
-            --as-user `
             --full-uri `
             --output tsv
+
+          if (-not $sasUrl) {
+            Write-Error "Failed to generate SAS URL"
+            exit 1
+          }
 
           Write-Host "Package uploaded successfully"
           Write-Host "SAS URL generated (expires in 30 minutes)"
@@ -303,14 +338,21 @@ jobs:
         env:
           STORAGE_ACCOUNT: ${{ steps.config.outputs.storage-account }}
           STORAGE_CONTAINER: ${{ steps.config.outputs.storage-container }}
+          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
           BLOB_NAME: ${{ steps.upload-blob.outputs.blob-name }}
         run: |
           Write-Host "Cleaning up deployment package from blob storage..."
+          $accountKey = az storage account keys list `
+            --resource-group $env:RESOURCE_GROUP `
+            --account-name $env:STORAGE_ACCOUNT `
+            --query "[0].value" `
+            --output tsv
+
           az storage blob delete `
             --account-name $env:STORAGE_ACCOUNT `
+            --account-key $accountKey `
             --container-name $env:STORAGE_CONTAINER `
             --name $env:BLOB_NAME `
-            --auth-mode login `
             --only-show-errors 2>&1 | Out-Null
           Write-Host "Cleanup complete"
 
