@@ -122,9 +122,6 @@ jobs:
           Write-Host "Resource Group: $($env:RESOURCE_GROUP)"
           Write-Host "Package: $($env:PACKAGE_PATH)"
 
-          # Read the deployment script
-          $deployScript = Get-Content -Path $env:DEPLOYMENT_SCRIPT_PATH -Raw
-
           # Read and base64 encode the package
           Write-Host "Encoding deployment package..."
           $packageBytes = [System.IO.File]::ReadAllBytes($env:PACKAGE_PATH)
@@ -132,93 +129,124 @@ jobs:
           Write-Host "Package size: $([math]::Round($packageBytes.Length / 1MB, 2)) MB"
 
           # Create the deployment script that will run on the VM
-          $vmScript = @"
-          # Decode and save the deployment package
-          `$packagePath = 'C:\Deploy\VBNetApp.zip'
-          `$packageBytes = [Convert]::FromBase64String('$packageBase64')
-          [System.IO.File]::WriteAllBytes(`$packagePath, `$packageBytes)
-          Write-Host "Package saved to: `$packagePath"
+          $vmScript = @'
+          param($PackageBase64, $AppPoolName, $SiteName, $AppName)
 
-          # Import IIS module
-          Import-Module WebAdministration -ErrorAction Stop
+          try {
+              # Decode and save the deployment package
+              $packagePath = 'C:\Deploy\VBNetApp.zip'
+              $packageBytes = [Convert]::FromBase64String($PackageBase64)
+              [System.IO.File]::WriteAllBytes($packagePath, $packageBytes)
+              Write-Host "Package saved to: $packagePath"
 
-          # Define deployment parameters
-          `$appPoolName = '$($env:IIS_APP_POOL)'
-          `$siteName = '$($env:IIS_SITE_NAME)'
-          `$appName = '$($env:IIS_APP_NAME)'
-          `$deployPath = "C:\inetpub\wwwroot\`$appName"
+              # Import IIS module
+              Import-Module WebAdministration -ErrorAction Stop
 
-          # Create app pool if it doesn't exist
-          if (-not (Test-Path "IIS:\AppPools\`$appPoolName")) {
-              Write-Host "Creating application pool: `$appPoolName"
-              New-WebAppPool -Name `$appPoolName
-              Set-ItemProperty "IIS:\AppPools\`$appPoolName" -Name managedRuntimeVersion -Value "v4.0"
+              # Define paths
+              $deployPath = "C:\inetpub\wwwroot\$AppName"
+
+              # Create app pool if it doesn't exist
+              if (-not (Test-Path "IIS:\AppPools\$AppPoolName")) {
+                  Write-Host "Creating application pool: $AppPoolName"
+                  New-WebAppPool -Name $AppPoolName
+                  Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name managedRuntimeVersion -Value "v4.0"
+              }
+
+              # Stop app pool if running
+              $poolState = (Get-WebAppPoolState -Name $AppPoolName -ErrorAction SilentlyContinue).Value
+              if ($poolState -eq "Started") {
+                  Write-Host "Stopping application pool..."
+                  Stop-WebAppPool -Name $AppPoolName
+                  Start-Sleep -Seconds 3
+              }
+
+              # Create deployment directory
+              if (-not (Test-Path $deployPath)) {
+                  New-Item -Path $deployPath -ItemType Directory -Force | Out-Null
+              } else {
+                  # Clean existing files
+                  Remove-Item -Path "$deployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
+              }
+
+              # Extract package
+              Write-Host "Extracting deployment package..."
+              Expand-Archive -Path $packagePath -DestinationPath $deployPath -Force
+
+              # Create/update IIS application
+              $appPath = "IIS:\Sites\$SiteName\$AppName"
+              if (-not (Test-Path $appPath)) {
+                  Write-Host "Creating IIS application..."
+                  New-WebApplication -Name $AppName -Site $SiteName -PhysicalPath $deployPath -ApplicationPool $AppPoolName
+              } else {
+                  Write-Host "Updating IIS application..."
+                  Set-ItemProperty $appPath -Name physicalPath -Value $deployPath
+                  Set-ItemProperty $appPath -Name applicationPool -Value $AppPoolName
+              }
+
+              # Start app pool
+              Write-Host "Starting application pool..."
+              Start-WebAppPool -Name $AppPoolName
+
+              Write-Host "Deployment Completed Successfully!"
+          } catch {
+              Write-Error "Deployment failed: $_"
+              exit 1
           }
+          '@
 
-          # Stop app pool
-          if ((Get-WebAppPoolState -Name `$appPoolName).Value -eq "Started") {
-              Write-Host "Stopping application pool..."
-              Stop-WebAppPool -Name `$appPoolName
-              Start-Sleep -Seconds 3
-          }
+          # Write script to temp file
+          $scriptPath = Join-Path $env:RUNNER_TEMP "deploy-script.ps1"
+          $vmScript | Out-File -FilePath $scriptPath -Encoding UTF8
 
-          # Create deployment directory
-          if (-not (Test-Path `$deployPath)) {
-              New-Item -Path `$deployPath -ItemType Directory -Force | Out-Null
-          }
+          # Write base64 package to temp file (to avoid command line length limits)
+          $base64Path = Join-Path $env:RUNNER_TEMP "package-base64.txt"
+          $packageBase64 | Out-File -FilePath $base64Path -Encoding UTF8 -NoNewline
 
-          # Extract package
-          Write-Host "Extracting deployment package..."
-          Expand-Archive -Path `$packagePath -DestinationPath `$deployPath -Force
-
-          # Create/update IIS application
-          `$appPath = "IIS:\Sites\`$siteName\`$appName"
-          if (-not (Test-Path `$appPath)) {
-              Write-Host "Creating IIS application..."
-              New-WebApplication -Name `$appName -Site `$siteName -PhysicalPath `$deployPath -ApplicationPool `$appPoolName
-          } else {
-              Write-Host "Updating IIS application..."
-              Set-ItemProperty `$appPath -Name physicalPath -Value `$deployPath
-          }
-
-          # Start app pool
-          Write-Host "Starting application pool..."
-          Start-WebAppPool -Name `$appPoolName
-
-          Write-Host "Deployment Completed Successfully!"
-          "@
-
-          # Execute via Azure VM Run Command
           Write-Host "Executing deployment on VM..."
 
+          # Use az vm run-command with script file
           $result = az vm run-command invoke `
             --resource-group $env:RESOURCE_GROUP `
             --name $env:VM_NAME `
             --command-id RunPowerShellScript `
-            --scripts $vmScript `
+            --scripts "@$scriptPath" `
+            --parameters "PackageBase64=$(Get-Content $base64Path -Raw)" "AppPoolName=$($env:IIS_APP_POOL)" "SiteName=$($env:IIS_SITE_NAME)" "AppName=$($env:IIS_APP_NAME)" `
             --output json 2>&1
 
-          $resultObj = $result | ConvertFrom-Json
+          Write-Host "Raw result: $result"
 
-          # Check for success
-          $stdout = $resultObj.value | Where-Object { $_.code -eq "ProvisioningState/succeeded" } | Select-Object -ExpandProperty message
-          $stderr = $resultObj.value | Where-Object { $_.code -like "*StdErr*" } | Select-Object -ExpandProperty message
+          try {
+              $resultObj = $result | ConvertFrom-Json
 
-          Write-Host "`n========== Deployment Output =========="
-          Write-Host $stdout
-          if ($stderr) {
-            Write-Host "`n========== Errors =========="
-            Write-Host $stderr
-          }
-          Write-Host "======================================`n"
+              # Extract stdout and stderr
+              $stdout = ""
+              $stderr = ""
+              foreach ($item in $resultObj.value) {
+                  if ($item.code -like "*StdOut*") { $stdout = $item.message }
+                  if ($item.code -like "*StdErr*") { $stderr = $item.message }
+              }
 
-          if ($stdout -match "Deployment Completed Successfully") {
-            Write-Host "Deployment successful!"
-            echo "status=success" >> $env:GITHUB_OUTPUT
-          } else {
-            Write-Error "Deployment may have failed. Check output above."
-            echo "status=failure" >> $env:GITHUB_OUTPUT
-            exit 1
+              Write-Host "`n========== Deployment Output =========="
+              Write-Host $stdout
+              if ($stderr) {
+                  Write-Host "`n========== Errors =========="
+                  Write-Host $stderr
+              }
+              Write-Host "======================================`n"
+
+              if ($stdout -match "Deployment Completed Successfully") {
+                  Write-Host "Deployment successful!"
+                  echo "status=success" >> $env:GITHUB_OUTPUT
+              } else {
+                  Write-Error "Deployment may have failed. Check output above."
+                  echo "status=failure" >> $env:GITHUB_OUTPUT
+                  exit 1
+              }
+          } catch {
+              Write-Error "Failed to parse result: $_"
+              Write-Host "Raw output was: $result"
+              echo "status=failure" >> $env:GITHUB_OUTPUT
+              exit 1
           }
 
       - name: Health check
