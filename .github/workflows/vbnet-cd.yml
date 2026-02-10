@@ -189,11 +189,14 @@ jobs:
             exit 1
           }
 
+          # Base64 encode the URL to safely pass it (SAS URLs contain & which breaks parameter passing)
+          $sasUrlBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($sasUrl))
+
           Write-Host "Package uploaded successfully"
           Write-Host "SAS URL generated (expires in 30 minutes)"
 
           echo "blob-name=$blobName" >> $env:GITHUB_OUTPUT
-          echo "sas-url=$sasUrl" >> $env:GITHUB_OUTPUT
+          echo "sas-url-base64=$sasUrlBase64" >> $env:GITHUB_OUTPUT
 
       - name: Deploy to VM
         if: steps.find-package.outputs.package-found == 'true'
@@ -205,7 +208,7 @@ jobs:
           IIS_SITE_NAME: ${{ steps.config.outputs.iis-site }}
           IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
           IIS_APP_POOL: ${{ steps.config.outputs.iis-app-pool }}
-          PACKAGE_URL: ${{ steps.upload-blob.outputs.sas-url }}
+          PACKAGE_URL_BASE64: ${{ steps.upload-blob.outputs.sas-url-base64 }}
         run: |
           Write-Host "Deploying to Azure VM via Run Command..."
           Write-Host "VM: $($env:VM_NAME)"
@@ -213,9 +216,13 @@ jobs:
 
           # Create the deployment script
           $vmScript = @'
-          param($PackageUrl, $AppPoolName, $SiteName, $AppName)
+          param($PackageUrlBase64, $AppPoolName, $SiteName, $AppName)
 
           try {
+              # Decode the base64-encoded URL
+              $PackageUrl = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($PackageUrlBase64))
+              Write-Host "Package URL decoded successfully"
+
               # Create deploy directory
               $deployDir = 'C:\Deploy'
               if (-not (Test-Path $deployDir)) {
@@ -294,7 +301,7 @@ jobs:
             --name $env:VM_NAME `
             --command-id RunPowerShellScript `
             --scripts "@$scriptPath" `
-            --parameters "PackageUrl=$($env:PACKAGE_URL)" "AppPoolName=$($env:IIS_APP_POOL)" "SiteName=$($env:IIS_SITE_NAME)" "AppName=$($env:IIS_APP_NAME)" `
+            --parameters "PackageUrlBase64=$($env:PACKAGE_URL_BASE64)" "AppPoolName=$($env:IIS_APP_POOL)" "SiteName=$($env:IIS_SITE_NAME)" "AppName=$($env:IIS_APP_NAME)" `
             --output json 2>&1
 
           Write-Host "Raw result: $result"
