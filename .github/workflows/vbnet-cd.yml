@@ -82,6 +82,7 @@ jobs:
         env:
           VM_NAME: ${{ steps.config.outputs.vm-name }}
           RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
+          IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
         run: |
           Write-Host "Checking VM status..."
 
@@ -103,8 +104,6 @@ jobs:
           $appUrl = "http://$($vmInfo.publicIp)/$($env:IIS_APP_NAME)"
           echo "public-ip=$($vmInfo.publicIp)" >> $env:GITHUB_OUTPUT
           echo "app-url=$appUrl" >> $env:GITHUB_OUTPUT
-        env:
-          IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
 
       - name: Upload package to VM and deploy
         if: steps.find-package.outputs.package-found == 'true'
