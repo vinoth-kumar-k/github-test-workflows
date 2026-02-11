@@ -56,11 +56,13 @@ jobs:
           collect-coverage: 'true'
 
       - name: Publish .NET Application
-        run: |
-          dotnet publish src/DotNetCoreApp/DotNetCoreApp/DotNetCoreApp.csproj \
-            -c Release \
-            -o ${{ github.workspace }}/publish \
-            /p:UseAppHost=false
+        uses: ./.github/actions/dotnet-publish
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          project-path: 'src/DotNetCoreApp/DotNetCoreApp/DotNetCoreApp.csproj'
+          configuration: 'Release'
+          output-path: ${{ github.workspace }}/publish
+          use-app-host: 'false'
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

@@ -1,0 +1,54 @@
+name: 'Publish .NET Application'
+description: 'Publishes a .NET application for deployment'
+author: 'Architecture Team'
+
+inputs:
+  dotnet-version:
+    description: '.NET SDK version to use'
+    required: false
+    default: '9.0.x'
+  project-path:
+    description: 'Path to project file (relative to repository root)'
+    required: true
+  configuration:
+    description: 'Build configuration (Debug/Release)'
+    required: false
+    default: 'Release'
+  output-path:
+    description: 'Output path for published artifacts'
+    required: false
+    default: './publish'
+  use-app-host:
+    description: 'Whether to use app host'
+    required: false
+    default: 'false'
+
+outputs:
+  publish-path:
+    description: 'Path to published artifacts'
+    value: ${{ steps.publish.outputs.publish-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Publish Application
+      id: publish
+      shell: bash
+      env:
+        PROJECT_PATH: ${{ inputs.project-path }}
+        CONFIGURATION: ${{ inputs.configuration }}
+        OUTPUT_PATH: ${{ inputs.output-path }}
+        USE_APP_HOST: ${{ inputs.use-app-host }}
+      run: |
+        dotnet publish "$PROJECT_PATH" \
+          -c "$CONFIGURATION" \
+          -o "$OUTPUT_PATH" \
+          /p:UseAppHost="$USE_APP_HOST"
+
+        echo "publish-path=$OUTPUT_PATH" >> $GITHUB_OUTPUT
+        echo "Published to: $OUTPUT_PATH"
