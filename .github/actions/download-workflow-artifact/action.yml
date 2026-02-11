@@ -1,0 +1,134 @@
+name: 'Download Workflow Artifact'
+description: 'Downloads artifacts from a different workflow run using GitHub REST API (replaces third-party cross-workflow artifact actions)'
+author: 'Architecture Team'
+
+inputs:
+  workflow:
+    description: 'Workflow filename (e.g., vbnet-ci.yml)'
+    required: true
+  run-id:
+    description: 'Specific workflow run ID (leave empty for latest successful run)'
+    required: false
+    default: ''
+  artifact-name:
+    description: 'Artifact name to download (supports wildcards with -like matching)'
+    required: true
+  path:
+    description: 'Destination path to extract the artifact'
+    required: false
+    default: './artifacts'
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+
+outputs:
+  artifact-found:
+    description: 'Whether a matching artifact was found (true/false)'
+    value: ${{ steps.download.outputs.artifact-found }}
+  artifact-name:
+    description: 'Name of the downloaded artifact'
+    value: ${{ steps.download.outputs.artifact-name }}
+  run-id:
+    description: 'Workflow run ID the artifact was downloaded from'
+    value: ${{ steps.download.outputs.run-id }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download artifact from workflow run
+      id: download
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        WORKFLOW: ${{ inputs.workflow }}
+        RUN_ID: ${{ inputs.run-id }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        DEST_PATH: ${{ inputs.path }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        $owner, $repo = $env:GITHUB_REPOSITORY -split '/'
+        $headers = @{
+          Authorization = "Bearer $env:GH_TOKEN"
+          Accept = "application/vnd.github+json"
+          "X-GitHub-Api-Version" = "2022-11-28"
+        }
+
+        # Resolve run ID if not provided
+        $runId = $env:RUN_ID
+        if (-not $runId) {
+          Write-Host "No run ID specified, finding latest successful run for workflow: $($env:WORKFLOW)"
+          $runsUrl = "https://api.github.com/repos/$owner/$repo/actions/workflows/$($env:WORKFLOW)/runs?status=success&per_page=1"
+          $runsResponse = Invoke-RestMethod -Uri $runsUrl -Headers $headers -Method Get
+
+          if ($runsResponse.total_count -eq 0) {
+            Write-Warning "No successful runs found for workflow: $($env:WORKFLOW)"
+            echo "artifact-found=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          $runId = $runsResponse.workflow_runs[0].id
+          Write-Host "Found latest successful run: $runId"
+        }
+
+        echo "run-id=$runId" >> $env:GITHUB_OUTPUT
+
+        # List artifacts for the run
+        Write-Host "Listing artifacts for run $runId..."
+        $artifactsUrl = "https://api.github.com/repos/$owner/$repo/actions/runs/$runId/artifacts"
+        $artifactsResponse = Invoke-RestMethod -Uri $artifactsUrl -Headers $headers -Method Get
+
+        if ($artifactsResponse.total_count -eq 0) {
+          Write-Warning "No artifacts found for run $runId"
+          echo "artifact-found=false" >> $env:GITHUB_OUTPUT
+          exit 0
+        }
+
+        # Match artifact by name (exact or wildcard)
+        $matchedArtifact = $null
+        foreach ($artifact in $artifactsResponse.artifacts) {
+          if ($artifact.name -eq $env:ARTIFACT_NAME -or $artifact.name -like $env:ARTIFACT_NAME) {
+            $matchedArtifact = $artifact
+            break
+          }
+        }
+
+        if (-not $matchedArtifact) {
+          Write-Warning "No artifact matching '$($env:ARTIFACT_NAME)' found in run $runId"
+          Write-Host "Available artifacts:"
+          $artifactsResponse.artifacts | ForEach-Object { Write-Host "  - $($_.name)" }
+          echo "artifact-found=false" >> $env:GITHUB_OUTPUT
+          exit 0
+        }
+
+        Write-Host "Found artifact: $($matchedArtifact.name) (ID: $($matchedArtifact.id), Size: $([math]::Round($matchedArtifact.size_in_bytes / 1MB, 2)) MB)"
+        echo "artifact-name=$($matchedArtifact.name)" >> $env:GITHUB_OUTPUT
+
+        # Download the artifact ZIP
+        $downloadUrl = "https://api.github.com/repos/$owner/$repo/actions/artifacts/$($matchedArtifact.id)/zip"
+        $tempZip = Join-Path $env:RUNNER_TEMP "artifact-$($matchedArtifact.id).zip"
+
+        Write-Host "Downloading artifact..."
+        Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile $tempZip -UseBasicParsing
+
+        if (-not (Test-Path $tempZip)) {
+          Write-Error "Failed to download artifact"
+          echo "artifact-found=false" >> $env:GITHUB_OUTPUT
+          exit 1
+        }
+
+        # Extract to destination
+        $destPath = $env:DEST_PATH
+        if (-not (Test-Path $destPath)) {
+          New-Item -ItemType Directory -Path $destPath -Force | Out-Null
+        }
+
+        Write-Host "Extracting artifact to: $destPath"
+        Expand-Archive -Path $tempZip -DestinationPath $destPath -Force
+
+        # Cleanup temp file
+        Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
+
+        Write-Host "Artifact downloaded and extracted successfully"
+        Get-ChildItem -Path $destPath -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+
+        echo "artifact-found=true" >> $env:GITHUB_OUTPUT

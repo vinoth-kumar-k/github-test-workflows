@@ -21,10 +21,7 @@ env:
 jobs:
   build:
     name: Build VB.NET Application
-    runs-on: windows-latest
-
-    outputs:
-      package-path: ${{ steps.msbuild.outputs.package-path }}
+    runs-on: [self-hosted, windows, vbnet]
 
     steps:
       - name: Checkout code
@@ -39,88 +36,42 @@ jobs:
           platform: ${{ env.BUILD_PLATFORM }}
           create-package: 'true'
 
-      - name: Display build artifacts
-        shell: pwsh
-        env:
-          PACKAGE_PATH: ${{ steps.msbuild.outputs.package-path }}
-        run: |
-          Write-Host "Build completed successfully!"
-          Write-Host "Package path: $($env:PACKAGE_PATH)"
-          Get-ChildItem -Path publish -Recurse
-
-  test:
-    name: Run Tests
-    runs-on: windows-latest
-    needs: build
-    if: false  # Optional: Enable when tests are added
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Setup VSTest
-        uses: darenm/Setup-VSTest@v1
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-
-      - name: Run VSTest
-        shell: pwsh
-        run: |
-          # Add test execution logic here
-          Write-Host "Tests would run here (placeholder)"
-
-  package:
-    name: Create Deployment Package
-    runs-on: windows-latest
-    needs: build
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-
-      - name: Prepare deployment package
-        shell: pwsh
-        run: |
-          Write-Host "Deployment package is ready for CD workflow"
-
-          # Find the package
-          $package = Get-ChildItem -Path publish -Filter "*.zip" -File -Recurse | Select-Object -First 1
-
-          if ($package) {
-            Write-Host "Package found: $($package.FullName)"
-            Write-Host "Package size: $([math]::Round($package.Length / 1MB, 2)) MB"
-          } else {
-            Write-Error "Deployment package not found!"
-            exit 1
-          }
-
       - name: Upload deployment package
         uses: actions/upload-artifact@v4
         with:
           name: deployment-package-${{ github.sha }}
-          path: publish/*.zip
+          path: publish/VBNetApp.zip
           retention-days: 90
 
       - name: Build summary
         shell: pwsh
         env:
           COMMIT_SHA: ${{ github.sha }}
+          PACKAGE_PATH: ${{ steps.msbuild.outputs.package-path }}
         run: |
           "### VB.NET Build Completed!" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**Configuration:** $($env:BUILD_CONFIGURATION)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**Platform:** $($env:BUILD_PLATFORM)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**Commit:** ``$($env:COMMIT_SHA)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Package:** ``$($env:PACKAGE_PATH)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**Deployment package ready for CD workflow**" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+  # Tests are disabled — VSTest is available on the self-hosted runner.
+  # Uncomment and configure when test projects are added.
+  # test:
+  #   name: Run Tests
+  #   runs-on: [self-hosted, windows, vbnet]
+  #   needs: build
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #     - name: Download build artifacts
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: build-output
+  #     - name: Run VSTest
+  #       shell: pwsh
+  #       run: |
+  #         vstest.console.exe **\*Tests.dll

@@ -15,7 +15,7 @@ on:
 jobs:
   deploy-dev:
     name: Deploy to Dev
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows, vbnet]
     if: >
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
       (github.event_name == 'workflow_dispatch')
@@ -38,30 +38,22 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Download deployment package from CI workflow
-        uses: dawidd6/action-download-artifact@v3
+        id: download
+        uses: ./.github/actions/download-workflow-artifact
         with:
           workflow: vbnet-ci.yml
-          run_id: ${{ github.event.inputs.run-id || github.event.workflow_run.id }}
-          name: deployment-package-${{ github.event.workflow_run.head_sha || github.sha }}
+          run-id: ${{ github.event.inputs.run-id || github.event.workflow_run.id }}
+          artifact-name: deployment-package-${{ github.event.workflow_run.head_sha || github.sha }}
           path: ./deployment-artifacts
-          if_no_artifact_found: warn
-          search_artifacts: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Find deployment package
         id: find-package
+        if: steps.download.outputs.artifact-found == 'true'
         shell: pwsh
         run: |
-          Write-Host "Looking for deployment package..."
-
-          # Try to find the package
           $package = Get-ChildItem -Path "./deployment-artifacts" -Filter "*.zip" -File -Recurse -ErrorAction SilentlyContinue |
                      Select-Object -First 1
-
-          if (-not $package) {
-            # Try alternate artifact naming
-            $package = Get-ChildItem -Path "." -Filter "VBNetApp*.zip" -File -Recurse -ErrorAction SilentlyContinue |
-                       Select-Object -First 1
-          }
 
           if ($package) {
             Write-Host "Package found: $($package.FullName)"
@@ -69,350 +61,24 @@ jobs:
             echo "package-path=$($package.FullName)" >> $env:GITHUB_OUTPUT
             echo "package-found=true" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host "No deployment package found!"
+            Write-Host "No deployment package found in artifacts!"
             echo "package-found=false" >> $env:GITHUB_OUTPUT
           }
 
-      - name: Verify VM is running
-        id: vm-check
-        shell: pwsh
-        env:
-          VM_NAME: ${{ steps.config.outputs.vm-name }}
-          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
-          IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
-        run: |
-          Write-Host "Checking VM status..."
-
-          $vmInfo = az vm show -d `
-            -g $env:RESOURCE_GROUP `
-            -n $env:VM_NAME `
-            --query "{powerState:powerState, publicIp:publicIps}" `
-            -o json | ConvertFrom-Json
-
-          Write-Host "VM: $($env:VM_NAME)"
-          Write-Host "Power State: $($vmInfo.powerState)"
-          Write-Host "Public IP: $($vmInfo.publicIp)"
-
-          if ($vmInfo.powerState -ne "VM running") {
-            Write-Error "VM is not running! Current state: $($vmInfo.powerState)"
-            exit 1
-          }
-
-          $appUrl = "http://$($vmInfo.publicIp)/$($env:IIS_APP_NAME)"
-          echo "public-ip=$($vmInfo.publicIp)" >> $env:GITHUB_OUTPUT
-          echo "app-url=$appUrl" >> $env:GITHUB_OUTPUT
-
-      - name: Upload package to blob storage
-        if: steps.find-package.outputs.package-found == 'true'
-        id: upload-blob
-        shell: pwsh
-        env:
-          STORAGE_ACCOUNT: ${{ steps.config.outputs.storage-account }}
-          STORAGE_CONTAINER: ${{ steps.config.outputs.storage-container }}
-          PACKAGE_PATH: ${{ steps.find-package.outputs.package-path }}
-          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
-        run: |
-          Write-Host "Uploading deployment package to Azure Blob Storage..."
-          Write-Host "Storage Account: $($env:STORAGE_ACCOUNT)"
-          Write-Host "Container: $($env:STORAGE_CONTAINER)"
-
-          # Get storage account key (more reliable than --auth-mode login for SAS)
-          $accountKey = az storage account keys list `
-            --resource-group $env:RESOURCE_GROUP `
-            --account-name $env:STORAGE_ACCOUNT `
-            --query "[0].value" `
-            --output tsv
-
-          if (-not $accountKey) {
-            Write-Error "Failed to get storage account key"
-            exit 1
-          }
-          Write-Host "Retrieved storage account key"
-
-          # Generate unique blob name
-          $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-          $blobName = "vbnetapp-$timestamp.zip"
-
-          # Create container if it doesn't exist
-          az storage container create `
-            --account-name $env:STORAGE_ACCOUNT `
-            --account-key $accountKey `
-            --name $env:STORAGE_CONTAINER `
-            --only-show-errors 2>&1 | Out-Null
-
-          # Upload the package
-          Write-Host "Uploading package as: $blobName"
-          $uploadResult = az storage blob upload `
-            --account-name $env:STORAGE_ACCOUNT `
-            --account-key $accountKey `
-            --container-name $env:STORAGE_CONTAINER `
-            --name $blobName `
-            --file $env:PACKAGE_PATH `
-            --overwrite `
-            --output json 2>&1
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to upload package to blob storage: $uploadResult"
-            exit 1
-          }
-          Write-Host "Upload completed"
-
-          # Verify blob exists
-          $blobExists = az storage blob exists `
-            --account-name $env:STORAGE_ACCOUNT `
-            --account-key $accountKey `
-            --container-name $env:STORAGE_CONTAINER `
-            --name $blobName `
-            --query "exists" `
-            --output tsv
-
-          if ($blobExists -ne "true") {
-            Write-Error "Blob verification failed - blob does not exist after upload"
-            exit 1
-          }
-          Write-Host "Blob verified: $blobName exists"
-
-          # Generate SAS URL valid for 30 minutes
-          $expiry = (Get-Date).AddMinutes(30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
-          $sasUrl = az storage blob generate-sas `
-            --account-name $env:STORAGE_ACCOUNT `
-            --account-key $accountKey `
-            --container-name $env:STORAGE_CONTAINER `
-            --name $blobName `
-            --permissions r `
-            --expiry $expiry `
-            --full-uri `
-            --output tsv
-
-          if (-not $sasUrl) {
-            Write-Error "Failed to generate SAS URL"
-            exit 1
-          }
-
-          # Base64 encode the URL to safely pass it (SAS URLs contain & which breaks parameter passing)
-          $sasUrlBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($sasUrl))
-
-          Write-Host "Package uploaded successfully"
-          Write-Host "SAS URL generated (expires in 30 minutes)"
-
-          echo "blob-name=$blobName" >> $env:GITHUB_OUTPUT
-          echo "sas-url-base64=$sasUrlBase64" >> $env:GITHUB_OUTPUT
-
-      - name: Deploy to VM
-        if: steps.find-package.outputs.package-found == 'true'
+      - name: Deploy to IIS
         id: deploy
-        shell: pwsh
-        env:
-          VM_NAME: ${{ steps.config.outputs.vm-name }}
-          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
-          IIS_SITE_NAME: ${{ steps.config.outputs.iis-site }}
-          IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
-          IIS_APP_POOL: ${{ steps.config.outputs.iis-app-pool }}
-          PACKAGE_URL_BASE64: ${{ steps.upload-blob.outputs.sas-url-base64 }}
-        run: |
-          Write-Host "Deploying to Azure VM via Run Command..."
-          Write-Host "VM: $($env:VM_NAME)"
-          Write-Host "Resource Group: $($env:RESOURCE_GROUP)"
-
-          # Create the deployment script
-          $vmScript = @'
-          param($PackageUrlBase64, $AppPoolName, $SiteName, $AppName)
-
-          try {
-              # Decode the base64-encoded URL
-              $PackageUrl = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($PackageUrlBase64))
-              Write-Host "Package URL decoded successfully"
-
-              # Create deploy directory
-              $deployDir = 'C:\Deploy'
-              if (-not (Test-Path $deployDir)) {
-                  New-Item -Path $deployDir -ItemType Directory -Force | Out-Null
-              }
-
-              # Download the package
-              $packagePath = Join-Path $deployDir 'VBNetApp.zip'
-              Write-Host "Downloading package from Azure Blob Storage..."
-              [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-              Invoke-WebRequest -Uri $PackageUrl -OutFile $packagePath -UseBasicParsing
-              Write-Host "Package downloaded to: $packagePath"
-
-              # Import IIS module
-              Import-Module WebAdministration -ErrorAction Stop
-
-              # Define paths
-              $wwwRoot = "C:\inetpub\wwwroot\$AppName"
-
-              # Create app pool if it doesn't exist
-              if (-not (Test-Path "IIS:\AppPools\$AppPoolName")) {
-                  Write-Host "Creating application pool: $AppPoolName"
-                  New-WebAppPool -Name $AppPoolName
-                  Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name managedRuntimeVersion -Value "v4.0"
-              }
-
-              # Stop app pool if running
-              $poolState = (Get-WebAppPoolState -Name $AppPoolName -ErrorAction SilentlyContinue).Value
-              if ($poolState -eq "Started") {
-                  Write-Host "Stopping application pool..."
-                  Stop-WebAppPool -Name $AppPoolName
-                  Start-Sleep -Seconds 3
-              }
-
-              # Create or clean deployment directory
-              if (-not (Test-Path $wwwRoot)) {
-                  New-Item -Path $wwwRoot -ItemType Directory -Force | Out-Null
-              } else {
-                  Remove-Item -Path "$wwwRoot\*" -Recurse -Force -ErrorAction SilentlyContinue
-              }
-
-              # Extract package to temp location first
-              $extractTemp = Join-Path $deployDir 'extract-temp'
-              if (Test-Path $extractTemp) {
-                  Remove-Item -Path $extractTemp -Recurse -Force
-              }
-              Write-Host "Extracting deployment package..."
-              Expand-Archive -Path $packagePath -DestinationPath $extractTemp -Force
-
-              # MSDeploy packages have nested structure - find the actual web content
-              # Look for web.config to identify the web root
-              $webConfig = Get-ChildItem -Path $extractTemp -Filter "web.config" -Recurse | Select-Object -First 1
-
-              if ($webConfig) {
-                  $sourceDir = $webConfig.DirectoryName
-                  Write-Host "Found web content at: $sourceDir"
-
-                  # Copy content to deployment directory
-                  Copy-Item -Path "$sourceDir\*" -Destination $wwwRoot -Recurse -Force
-                  Write-Host "Content copied to: $wwwRoot"
-              } else {
-                  # No web.config found, check if it's a flat structure
-                  Write-Host "No web.config found, using extracted content as-is"
-                  Copy-Item -Path "$extractTemp\*" -Destination $wwwRoot -Recurse -Force
-              }
-
-              # Cleanup temp extraction folder
-              Remove-Item -Path $extractTemp -Recurse -Force -ErrorAction SilentlyContinue
-
-              # List deployed files for verification
-              Write-Host "Deployed files:"
-              Get-ChildItem -Path $wwwRoot -Recurse -File | Select-Object -First 20 | ForEach-Object { Write-Host "  $($_.Name)" }
-
-              # Create/update IIS application
-              $appPath = "IIS:\Sites\$SiteName\$AppName"
-              if (-not (Test-Path $appPath)) {
-                  Write-Host "Creating IIS application..."
-                  New-WebApplication -Name $AppName -Site $SiteName -PhysicalPath $wwwRoot -ApplicationPool $AppPoolName
-              } else {
-                  Write-Host "Updating IIS application..."
-                  Set-ItemProperty $appPath -Name physicalPath -Value $wwwRoot
-                  Set-ItemProperty $appPath -Name applicationPool -Value $AppPoolName
-              }
-
-              # Start app pool
-              Write-Host "Starting application pool..."
-              Start-WebAppPool -Name $AppPoolName
-
-              Write-Host "Deployment Completed Successfully!"
-          } catch {
-              Write-Error "Deployment failed: $_"
-              exit 1
-          }
-          '@
-
-          # Write script to temp file
-          $scriptPath = Join-Path $env:RUNNER_TEMP "deploy-script.ps1"
-          $vmScript | Out-File -FilePath $scriptPath -Encoding UTF8
-
-          Write-Host "Executing deployment on VM..."
-
-          $result = az vm run-command invoke `
-            --resource-group $env:RESOURCE_GROUP `
-            --name $env:VM_NAME `
-            --command-id RunPowerShellScript `
-            --scripts "@$scriptPath" `
-            --parameters "PackageUrlBase64=$($env:PACKAGE_URL_BASE64)" "AppPoolName=$($env:IIS_APP_POOL)" "SiteName=$($env:IIS_SITE_NAME)" "AppName=$($env:IIS_APP_NAME)" `
-            --output json 2>&1
-
-          Write-Host "Raw result: $result"
-
-          try {
-              $resultObj = $result | ConvertFrom-Json
-
-              $stdout = ""
-              $stderr = ""
-              foreach ($item in $resultObj.value) {
-                  if ($item.code -like "*StdOut*") { $stdout = $item.message }
-                  if ($item.code -like "*StdErr*") { $stderr = $item.message }
-              }
-
-              Write-Host "`n========== Deployment Output =========="
-              Write-Host $stdout
-              if ($stderr) {
-                  Write-Host "`n========== Errors =========="
-                  Write-Host $stderr
-              }
-              Write-Host "======================================`n"
-
-              if ($stdout -match "Deployment Completed Successfully") {
-                  Write-Host "Deployment successful!"
-                  echo "status=success" >> $env:GITHUB_OUTPUT
-              } else {
-                  Write-Error "Deployment may have failed. Check output above."
-                  echo "status=failure" >> $env:GITHUB_OUTPUT
-                  exit 1
-              }
-          } catch {
-              Write-Error "Failed to parse result: $_"
-              Write-Host "Raw output was: $result"
-              echo "status=failure" >> $env:GITHUB_OUTPUT
-              exit 1
-          }
-
-      - name: Cleanup blob storage
-        if: always() && steps.upload-blob.outputs.blob-name
-        shell: pwsh
-        env:
-          STORAGE_ACCOUNT: ${{ steps.config.outputs.storage-account }}
-          STORAGE_CONTAINER: ${{ steps.config.outputs.storage-container }}
-          RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
-          BLOB_NAME: ${{ steps.upload-blob.outputs.blob-name }}
-        run: |
-          Write-Host "Cleaning up deployment package from blob storage..."
-          $accountKey = az storage account keys list `
-            --resource-group $env:RESOURCE_GROUP `
-            --account-name $env:STORAGE_ACCOUNT `
-            --query "[0].value" `
-            --output tsv
-
-          az storage blob delete `
-            --account-name $env:STORAGE_ACCOUNT `
-            --account-key $accountKey `
-            --container-name $env:STORAGE_CONTAINER `
-            --name $env:BLOB_NAME `
-            --only-show-errors 2>&1 | Out-Null
-          Write-Host "Cleanup complete"
-
-      - name: Health check
-        if: steps.deploy.outputs.status == 'success'
-        shell: pwsh
-        env:
-          APP_URL: ${{ steps.vm-check.outputs.app-url }}
-        run: |
-          Write-Host "Performing health check..."
-          Write-Host "Application URL: $($env:APP_URL)"
-
-          Start-Sleep -Seconds 10
-
-          try {
-            $response = Invoke-WebRequest -Uri $env:APP_URL -UseBasicParsing -TimeoutSec 30
-            if ($response.StatusCode -eq 200) {
-              Write-Host "Health check passed! Application is accessible."
-            } else {
-              Write-Warning "Health check returned status code: $($response.StatusCode)"
-            }
-          } catch {
-            Write-Warning "Health check failed: $_"
-            Write-Host "Application may still be starting up."
-          }
+        if: steps.find-package.outputs.package-found == 'true'
+        uses: ./.github/actions/iis-deploy
+        with:
+          vm-name: ${{ steps.config.outputs.vm-name }}
+          resource-group: ${{ steps.config.outputs.resource-group }}
+          storage-account: ${{ steps.config.outputs.storage-account }}
+          storage-container: ${{ steps.config.outputs.storage-container }}
+          package-path: ${{ steps.find-package.outputs.package-path }}
+          iis-site-name: ${{ steps.config.outputs.iis-site }}
+          iis-app-name: ${{ steps.config.outputs.iis-app-name }}
+          iis-app-pool: ${{ steps.config.outputs.iis-app-pool }}
+          environment: dev
 
       - name: Deployment summary
         if: always()
@@ -421,18 +87,20 @@ jobs:
           VM_NAME: ${{ steps.config.outputs.vm-name }}
           RESOURCE_GROUP: ${{ steps.config.outputs.resource-group }}
           IIS_APP_NAME: ${{ steps.config.outputs.iis-app-name }}
-          APP_URL: ${{ steps.vm-check.outputs.app-url }}
-          DEPLOY_STATUS: ${{ steps.deploy.outputs.status }}
-          PACKAGE_FOUND: ${{ steps.find-package.outputs.package-found }}
+          APP_URL: ${{ steps.deploy.outputs.app-url }}
+          DEPLOY_STATUS: ${{ steps.deploy.outputs.deployment-status }}
+          ARTIFACT_FOUND: ${{ steps.download.outputs.artifact-found }}
+          ARTIFACT_RUN_ID: ${{ steps.download.outputs.run-id }}
         run: |
           "### VB.NET Deployment Summary" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**VM:** ``$($env:VM_NAME)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**Resource Group:** ``$($env:RESOURCE_GROUP)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**Application:** ``$($env:IIS_APP_NAME)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "**Source Run:** ``$($env:ARTIFACT_RUN_ID)``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
-          if ($env:PACKAGE_FOUND -eq "true") {
+          if ($env:ARTIFACT_FOUND -eq "true") {
             "**Deployment Status:** $($env:DEPLOY_STATUS)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
             "**Application URL:** $($env:APP_URL)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           } else {

@@ -19,7 +19,7 @@ inputs:
     required: false
     default: 'true'
   create-package:
-    description: 'Create Web Deploy package'
+    description: 'Create deployment package (clean flat ZIP)'
     required: false
     default: 'true'
 
@@ -29,7 +29,7 @@ outputs:
     value: ${{ steps.build.outputs.build-output }}
   package-path:
     description: 'Path to deployment package'
-    value: ${{ steps.build.outputs.package-path }}
+    value: ${{ steps.package.outputs.package-path }}
 
 runs:
   using: "composite"
@@ -74,14 +74,14 @@ runs:
           "/verbosity:minimal"
         )
 
-        # Add Web Deploy package creation if enabled
+        # Publish to a flat folder structure for clean IIS deployment
         if ($env:CREATE_PACKAGE -eq "true") {
+          $publishUrl = Join-Path (Get-Location) "publish\content"
           $buildArgs += @(
             "/p:DeployOnBuild=true",
-            "/p:WebPublishMethod=Package",
-            "/p:PackageAsSingleFile=true",
-            "/p:SkipInvalidConfigurations=true",
-            "/p:PackageLocation=$(Get-Location)\publish"
+            "/p:WebPublishMethod=FileSystem",
+            "/p:publishUrl=$publishUrl",
+            "/p:SkipInvalidConfigurations=true"
           )
         }
 
@@ -100,20 +100,37 @@ runs:
         $solutionDir = Split-Path -Parent $env:SOLUTION_PATH
         echo "build-output=$solutionDir\bin\$($env:CONFIGURATION)" >> $env:GITHUB_OUTPUT
 
-        # Find package if created
-        if (Test-Path "publish") {
-          $package = Get-ChildItem -Path "publish" -Filter "*.zip" -File | Select-Object -First 1
-          if ($package) {
-            echo "package-path=$($package.FullName)" >> $env:GITHUB_OUTPUT
-            Write-Host "Deployment package created: $($package.FullName)"
-          }
+    - name: Create deployment ZIP
+      id: package
+      if: inputs.create-package == 'true'
+      shell: pwsh
+      run: |
+        $contentDir = Join-Path (Get-Location) "publish\content"
+        $zipPath = Join-Path (Get-Location) "publish\VBNetApp.zip"
+
+        if (-not (Test-Path $contentDir)) {
+          Write-Error "Publish content directory not found: $contentDir"
+          exit 1
         }
 
+        Write-Host "Creating clean deployment ZIP from: $contentDir"
+        Compress-Archive -Path "$contentDir\*" -DestinationPath $zipPath -Force
+
+        $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
+        Write-Host "Deployment package created: $zipPath ($zipSize MB)"
+
+        # Verify ZIP contains flat IIS-ready structure
+        Write-Host "ZIP contents (top-level):"
+        $entries = [System.IO.Compression.ZipFile]::OpenRead($zipPath).Entries |
+          ForEach-Object { ($_.FullName -split '/')[0] } | Sort-Object -Unique
+        $entries | ForEach-Object { Write-Host "  $_" }
+
+        echo "package-path=$zipPath" >> $env:GITHUB_OUTPUT
+
     - name: Upload build artifacts
+      if: inputs.create-package == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: build-output
-        path: |
-          **/bin/${{ inputs.configuration }}
-          publish/*.zip
+        path: publish/VBNetApp.zip
         retention-days: 30
