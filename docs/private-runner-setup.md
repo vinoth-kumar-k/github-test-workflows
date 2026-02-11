@@ -10,6 +10,7 @@ This guide documents two approaches for running GitHub Actions on a runner with 
 
 - Azure Windows VM (Server 2019/2022) on the same VNet/subnet as IIS deployment VMs
 - Visual Studio Build Tools 2022 with `.NET Framework 4.8 targeting pack` and `Web development build tools` workloads
+- PowerShell 7+ (`pwsh`) installed and on PATH (all workflow scripts use `shell: pwsh`)
 - NuGet CLI, Azure CLI installed and on PATH
 
 ### Setup Steps
@@ -35,6 +36,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 ```powershell
 Get-Service actions.runner.*
+pwsh --version
 msbuild -version
 nuget help
 az version

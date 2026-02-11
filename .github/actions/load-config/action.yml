@@ -60,48 +60,85 @@ runs:
   steps:
     - name: Parse environment configuration
       id: parse
-      shell: python
+      shell: pwsh
       env:
         CONFIG_PATH: ${{ inputs.config-path }}
         TARGET_ENV: ${{ inputs.environment }}
         APP_TYPE: ${{ inputs.app-type }}
       run: |
-        import os
+        # Simple YAML parser for the flat environments.yml structure.
+        # Supports two levels: environment-level keys and app-type section keys.
+        $lines = Get-Content -Path $env:CONFIG_PATH
 
-        try:
-            import yaml
-        except ImportError:
-            import subprocess, sys
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pyyaml', '-q'])
-            import yaml
+        $currentEnv = $null
+        $currentSection = $null
+        $config = @{}
 
-        config_path = os.environ['CONFIG_PATH']
-        env_name = os.environ['TARGET_ENV']
-        app_type = os.environ['APP_TYPE']
+        foreach ($line in $lines) {
+            # Skip empty lines and comments
+            if ($line -match '^\s*$' -or $line -match '^\s*#') { continue }
 
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
+            # Strip inline comments (but preserve values containing #)
+            $stripped = $line -replace '\s+#[^''\"]*$', ''
 
-        env_config = config.get(env_name)
-        if not env_config:
-            available = ', '.join(config.keys())
-            raise ValueError(f"Environment '{env_name}' not found in {config_path}. Available: {available}")
+            # Determine indent level (number of leading spaces)
+            $indent = ($stripped -replace '[^ ].*', '').Length
 
-        app_config = env_config.get(app_type)
-        if not app_config:
-            available = ', '.join(k for k in env_config if isinstance(env_config[k], dict))
-            raise ValueError(f"App type '{app_type}' not found under '{env_name}'. Available: {available}")
+            if ($indent -eq 0 -and $stripped -match '^(\S+):\s*$') {
+                # Top-level key = environment name
+                $currentEnv = $Matches[1]
+                $currentSection = $null
+                $config[$currentEnv] = @{ '_sections' = @{} }
+            }
+            elseif ($indent -eq 2 -and $currentEnv) {
+                if ($stripped -match '^\s+(\S+):\s*$') {
+                    # Section header (app-type like dotnet-core, vbnet)
+                    $currentSection = $Matches[1]
+                    $config[$currentEnv]['_sections'][$currentSection] = @{}
+                }
+                elseif ($stripped -match '^\s+(\S+):\s+(.+)') {
+                    # Environment-level key-value pair
+                    $config[$currentEnv][$Matches[1]] = $Matches[2].Trim()
+                    $currentSection = $null
+                }
+            }
+            elseif ($indent -eq 4 -and $currentEnv -and $currentSection) {
+                if ($stripped -match '^\s+(\S+):\s+(.+)') {
+                    # Section-level key-value pair
+                    $config[$currentEnv]['_sections'][$currentSection][$Matches[1]] = $Matches[2].Trim()
+                }
+            }
+        }
 
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_out:
-            # Write environment-level values (non-dict entries like key-vault-name)
-            for key, value in env_config.items():
-                if not isinstance(value, dict):
-                    gh_out.write(f"{key}={value}\n")
-                    print(f"  {key}={value}")
+        # Validate environment exists
+        if (-not $config.ContainsKey($env:TARGET_ENV)) {
+            $available = ($config.Keys | Where-Object { $_ -ne '_sections' }) -join ', '
+            Write-Error "Environment '$($env:TARGET_ENV)' not found in $($env:CONFIG_PATH). Available: $available"
+            exit 1
+        }
 
-            # Write app-type-specific values
-            for key, value in app_config.items():
-                gh_out.write(f"{key}={value}\n")
-                print(f"  {key}={value}")
+        $envConfig = $config[$env:TARGET_ENV]
 
-        print(f"Loaded configuration for {env_name}/{app_type}")
+        # Validate app-type exists
+        if (-not $envConfig['_sections'].ContainsKey($env:APP_TYPE)) {
+            $available = ($envConfig['_sections'].Keys) -join ', '
+            Write-Error "App type '$($env:APP_TYPE)' not found under '$($env:TARGET_ENV)'. Available: $available"
+            exit 1
+        }
+
+        $appConfig = $envConfig['_sections'][$env:APP_TYPE]
+
+        # Write environment-level values
+        foreach ($key in $envConfig.Keys) {
+            if ($key -eq '_sections') { continue }
+            Write-Host "  $key=$($envConfig[$key])"
+            echo "$key=$($envConfig[$key])" >> $env:GITHUB_OUTPUT
+        }
+
+        # Write app-type-specific values
+        foreach ($key in $appConfig.Keys) {
+            Write-Host "  $key=$($appConfig[$key])"
+            echo "$key=$($appConfig[$key])" >> $env:GITHUB_OUTPUT
+        }
+
+        Write-Host "Loaded configuration for $($env:TARGET_ENV)/$($env:APP_TYPE)"
