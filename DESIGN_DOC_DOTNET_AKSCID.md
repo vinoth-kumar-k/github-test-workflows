@@ -29,7 +29,7 @@ The pipeline uses custom composite GitHub Actions to encapsulate common, repeata
 - **`dotnet-build`:** Handles .NET SDK setup, NuGet package caching, dependency restoration, and application building. Ensures consistent build processes across environments.
 - **`dotnet-test`:** Orchestrates test execution with optional code coverage collection and publishes test results as artifacts. Supports `--no-build` optimization.
 - **`dotnet-publish`:** Manages publishing of .NET applications to specified output paths. Supports `--no-build` for efficiency.
-- **`load-config`:** Parses `environments.yml` to extract environment-specific settings (ACR name, AKS cluster, namespace). Centralizes configuration management and makes workflows environment-agnostic.
+- **`load-config`:** Parses `.github/config/environments.yml` to extract environment-specific settings (ACR name, AKS cluster, namespace). Centralizes configuration management and makes workflows environment-agnostic.
 
 ## 4. Build Pipeline Flow
 
@@ -43,7 +43,7 @@ The pipeline uses custom composite GitHub Actions to encapsulate common, repeata
 
 2. **Docker Image Build and Push Job:**
    - Depends on build-and-test job completion
-   - Download published artifacts
+   - Download published artifacts from the previous job
    - Load environment-specific configuration
    - Authenticate to Azure and ACR
    - Build Docker image with GitHub Actions cache
@@ -67,10 +67,12 @@ The pipeline uses custom composite GitHub Actions to encapsulate common, repeata
 The `Dockerfile` is optimized for production ASP.NET Core containerization:
 
 - **Base Image:** `mcr.microsoft.com/dotnet/aspnet:9.0` - minimal runtime image providing lean deployments
-- **Multi-stage Pattern:** Effectively implemented through separated CI build process and runtime container
+- **Artifact-based Build Strategy:** The Dockerfile copies pre-built artifacts from the CI pipeline (`COPY publish .`). This keeps the runtime image small and delegates the build process to the CI workflow, ensuring that the deployed code is exactly what was tested.
 - **Non-root User:** Dedicated `appuser` (UID 1000, GID 1000) runs the application - critical security practice
 - **Port Configuration:** Application listens on port `8080` (non-privileged port)
-- **Health Checks:** Kubernetes-ready health endpoint at `/health` with 30s interval, 3s timeout
+- **Health Checks:**
+    - Dockerfile `HEALTHCHECK` uses `curl` to check `http://localhost:8080/health`.
+    - Kubernetes Probes (Liveness/Readiness/Startup) are configured to use `/health/live`, `/health/ready`, and `/health`.
 - **Entry Point:** `ENTRYPOINT ["dotnet", "DotNetCoreApp.dll"]`
 
 ### 5.1. Security Features in Dockerfile
@@ -81,7 +83,7 @@ The `Dockerfile` is optimized for production ASP.NET Core containerization:
 
 ## 6. Configuration Management
 
-The pipeline uses centralized configuration through `environments.yml`:
+The pipeline uses centralized configuration through `.github/config/environments.yml`:
 
 ### 6.1. Structure
 ```yaml
