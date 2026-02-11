@@ -264,9 +264,37 @@ jobs:
                   Remove-Item -Path "$wwwRoot\*" -Recurse -Force -ErrorAction SilentlyContinue
               }
 
-              # Extract package
+              # Extract package to temp location first
+              $extractTemp = Join-Path $deployDir 'extract-temp'
+              if (Test-Path $extractTemp) {
+                  Remove-Item -Path $extractTemp -Recurse -Force
+              }
               Write-Host "Extracting deployment package..."
-              Expand-Archive -Path $packagePath -DestinationPath $wwwRoot -Force
+              Expand-Archive -Path $packagePath -DestinationPath $extractTemp -Force
+
+              # MSDeploy packages have nested structure - find the actual web content
+              # Look for web.config to identify the web root
+              $webConfig = Get-ChildItem -Path $extractTemp -Filter "web.config" -Recurse | Select-Object -First 1
+
+              if ($webConfig) {
+                  $sourceDir = $webConfig.DirectoryName
+                  Write-Host "Found web content at: $sourceDir"
+
+                  # Copy content to deployment directory
+                  Copy-Item -Path "$sourceDir\*" -Destination $wwwRoot -Recurse -Force
+                  Write-Host "Content copied to: $wwwRoot"
+              } else {
+                  # No web.config found, check if it's a flat structure
+                  Write-Host "No web.config found, using extracted content as-is"
+                  Copy-Item -Path "$extractTemp\*" -Destination $wwwRoot -Recurse -Force
+              }
+
+              # Cleanup temp extraction folder
+              Remove-Item -Path $extractTemp -Recurse -Force -ErrorAction SilentlyContinue
+
+              # List deployed files for verification
+              Write-Host "Deployed files:"
+              Get-ChildItem -Path $wwwRoot -Recurse -File | Select-Object -First 20 | ForEach-Object { Write-Host "  $($_.Name)" }
 
               # Create/update IIS application
               $appPath = "IIS:\Sites\$SiteName\$AppName"
