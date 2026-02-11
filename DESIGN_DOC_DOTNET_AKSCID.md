@@ -12,6 +12,58 @@ The CI/CD process is split into two distinct, but interconnected, GitHub Actions
 
 This clear separation enhances maintainability, allows for independent execution and troubleshooting, and promotes a pull-based deployment model where the CD pipeline consumes artifacts produced by CI.
 
+```mermaid
+graph TD
+    %% CI Workflow Definition
+    subgraph CI ["CI Workflow (dotnet-core-ci.yml)"]
+        direction TB
+        CI_Start((Start))
+
+        subgraph CI_Job1 ["Job: Build and Test"]
+            Step1["Checkout Code"]
+            Step2["Build .NET App"]
+            Step3["Run Tests"]
+            Step4["Publish Artifacts"]
+            Step5["Upload Artifacts"]
+
+            Step1 --> Step2 --> Step3 --> Step4 --> Step5
+        end
+
+        subgraph CI_Job2 ["Job: Build and Push"]
+            Step6["Checkout Code"]
+            Step7["Download Artifacts"]
+            Step8["Load Config & Login"]
+            Step9["Build & Push Docker Image"]
+
+            Step6 --> Step7 --> Step8 --> Step9
+        end
+
+        CI_Start --> CI_Job1
+        CI_Job1 --> CI_Job2
+    end
+
+    %% CD Workflow Definition
+    subgraph CD ["CD Workflow (dotnet-core-cd.yml)"]
+        direction TB
+        CD_Start((Start))
+
+        subgraph CD_Job1 ["Job: Deploy to Dev"]
+            Step10["Checkout Code"]
+            Step11["Load Config & Tag"]
+            Step12["AKS Login & Context"]
+            Step13["Deploy Manifests"]
+            Step14["Verify Rollout"]
+
+            Step10 --> Step11 --> Step12 --> Step13 --> Step14
+        end
+
+        CD_Start --> CD_Job1
+    end
+
+    %% Connection between CI and CD
+    CI_Job2 -->|Trigger on Success| CD_Start
+```
+
 ### 2.2. Workflow Triggering
 - **CI Workflow (`dotnet-core-ci.yml`):**
     - **`push` events:** Triggered on pushes to `main`, `develop`, and `master` branches. Uses path filtering (`paths: 'src/DotNetCoreApp/**'`) to only run when changes occur within the .NET Core application source, its workflow file, or custom actions. This optimizes resource consumption.
