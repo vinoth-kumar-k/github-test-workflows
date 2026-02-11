@@ -26,14 +26,6 @@ staging:
     resource-group: rg-staging        # placeholder
     namespace: staging
     image-tag-suffix: staging
-  vbnet:
-    vm-name: vm-staging
-    resource-group: rg-staging
-    storage-account: stvbnetstagingdeploy
-    storage-container: deployments
-    iis-site: Default Web Site
-    iis-app-name: VBNetApp-Staging
-    iis-app-pool: VBNetAppPool-Staging
 
 prod:
   key-vault-name: kv-prod
@@ -43,11 +35,3 @@ prod:
     resource-group: rg-prod          # placeholder
     namespace: production
     image-tag-suffix: latest
-  vbnet:
-    vm-name: vm-prod
-    resource-group: rg-prod
-    storage-account: stvbnetproddeploy
-    storage-container: deployments
-    iis-site: Default Web Site
-    iis-app-name: VBNetApp
-    iis-app-pool: VBNetAppPool
