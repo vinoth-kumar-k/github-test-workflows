@@ -35,11 +35,8 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: Setup .NET SDK
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: ${{ inputs.dotnet-version }}
-
+    # Note: .NET SDK setup removed - assumed to be done in build step
+    # If running standalone, ensure dotnet-build action runs first
     - name: Publish Application
       id: publish
       shell: bash

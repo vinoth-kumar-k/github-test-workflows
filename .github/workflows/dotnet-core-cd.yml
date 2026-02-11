@@ -85,20 +85,45 @@ jobs:
           echo "::add-mask::$SP_CLIENT_SECRET"
           echo "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=$SP_CLIENT_SECRET" >> $GITHUB_ENV
 
-      - name: Deploy manifests
+      - name: Deploy manifests with rollback support
         env:
           IMAGE: ${{ steps.image.outputs.full-image }}
           NAMESPACE: ${{ steps.config.outputs.namespace }}
           ENVIRONMENT: dev
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
+          # Add deployment annotation for tracking
+          export CHANGE_CAUSE="Deploy $IMAGE from GitHub Actions run $GITHUB_RUN_ID"
+
+          # Apply manifests
           envsubst < k8s/dotnetcoreapp/deployment.yaml | kubectl apply -f -
           envsubst < k8s/dotnetcoreapp/service.yaml | kubectl apply -f -
 
-      - name: Wait for rollout
+          # Annotate deployment for rollback tracking
+          kubectl annotate deployment/dotnetcoreapp \
+            kubernetes.io/change-cause="$CHANGE_CAUSE" \
+            -n "$NAMESPACE" \
+            --overwrite
+
+      - name: Wait for rollout with auto-rollback
         env:
           NAMESPACE: ${{ steps.config.outputs.namespace }}
         run: |
-          kubectl rollout status deployment/dotnetcoreapp -n "$NAMESPACE" --timeout=300s
+          echo "Waiting for deployment rollout..."
+          if ! kubectl rollout status deployment/dotnetcoreapp -n "$NAMESPACE" --timeout=300s; then
+            echo "❌ Deployment failed! Initiating automatic rollback..."
+
+            # Rollback to previous revision
+            kubectl rollout undo deployment/dotnetcoreapp -n "$NAMESPACE"
+
+            echo "Waiting for rollback to complete..."
+            kubectl rollout status deployment/dotnetcoreapp -n "$NAMESPACE" --timeout=300s
+
+            echo "❌ Deployment failed and rolled back to previous version"
+            exit 1
+          fi
+
+          echo "✅ Deployment successful!"
 
       - name: Deployment summary
         if: always()
