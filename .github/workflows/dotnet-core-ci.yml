@@ -55,6 +55,20 @@ jobs:
           configuration: 'Release'
           collect-coverage: 'true'
 
+      - name: Publish .NET Application
+        run: |
+          dotnet publish src/DotNetCoreApp/DotNetCoreApp/DotNetCoreApp.csproj \
+            -c Release \
+            -o ${{ github.workspace }}/publish \
+            /p:UseAppHost=false
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-app-artifacts
+          path: ${{ github.workspace }}/publish
+          retention-days: 1
+
   build-and-push-to-acr:
     name: Build Docker Image and Push to ACR
     runs-on: ubuntu-latest
@@ -64,11 +78,16 @@ jobs:
     outputs:
       image-tag: ${{ steps.meta.outputs.tags }}
       image-digest: ${{ steps.build-push.outputs.digest }}
-      image-version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dotnet-app-artifacts
+          path: ${{ github.workspace }}/artifacts/publish
 
       - name: Determine deployment environment
         id: determine-env
@@ -94,17 +113,6 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Generate Version
-        id: version
-        env:
-          COMMIT_SHA: ${{ github.sha }}
-        run: |
-          # Generate semantic version from git commit
-          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
-          VERSION="1.0.0-${SHORT_SHA}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Generated version: ${VERSION}"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -123,29 +131,23 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
             type=sha,prefix={{branch}}-
-            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
 
       - name: Build and push Docker image
         id: build-push
         uses: docker/build-push-action@v5
         with:
-          context: ${{ env.DOCKER_BUILD_CONTEXT }}
+          context: ${{ github.workspace }}/artifacts
           file: ${{ env.DOCKERFILE_PATH }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
-            VCS_REF=${{ github.sha }}
-            VERSION=${{ steps.version.outputs.version }}
 
       - name: Output Image Details
         env:
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
           IMAGE_DIGEST: ${{ steps.build-push.outputs.digest }}
-          IMAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           echo "### Docker Image Built Successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -155,7 +157,5 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Image Digest:** \`$IMAGE_DIGEST\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** \`$IMAGE_VERSION\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Ready for AKS deployment via existing CD workflow**" >> $GITHUB_STEP_SUMMARY
