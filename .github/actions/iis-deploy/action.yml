@@ -147,7 +147,7 @@ runs:
         Write-Host "Blob verified: $blobName exists"
 
         # Generate SAS URL valid for 30 minutes
-        $expiry = (Get-Date).AddMinutes(30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
+        $expiry = (Get-Date).AddMinutes(30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         $sasUrl = az storage blob generate-sas `
           --account-name $env:STORAGE_ACCOUNT `
           --account-key $accountKey `
@@ -174,6 +174,7 @@ runs:
 
     - name: Deploy to VM via Run Command
       id: deploy
+      timeout-minutes: 15
       shell: pwsh
       env:
         VM_NAME: ${{ inputs.vm-name }}
@@ -192,13 +193,14 @@ runs:
         # Bake config values into the script header. We embed values directly
         # instead of using --parameters because az vm run-command invoke
         # splits parameter values at spaces (breaks "Default Web Site").
+        # Escape single quotes to prevent PowerShell injection in baked values
         $configLines = @(
-          "`$PackageUrlBase64 = '$($env:PACKAGE_URL_BASE64)'"
-          "`$AppPoolName = '$($env:IIS_APP_POOL)'"
-          "`$SiteName = '$($env:IIS_SITE_NAME)'"
-          "`$AppName = '$($env:IIS_APP_NAME)'"
-          "`$DeployScriptPath = '$($env:DEPLOY_SCRIPT_PATH)'"
-          "`$Environment = '$($env:DEPLOY_ENVIRONMENT)'"
+          "`$PackageUrlBase64 = '$($env:PACKAGE_URL_BASE64 -replace "'", "''")'"
+          "`$AppPoolName = '$($env:IIS_APP_POOL -replace "'", "''")'"
+          "`$SiteName = '$($env:IIS_SITE_NAME -replace "'", "''")'"
+          "`$AppName = '$($env:IIS_APP_NAME -replace "'", "''")'"
+          "`$DeployScriptPath = '$($env:DEPLOY_SCRIPT_PATH -replace "'", "''")'"
+          "`$Environment = '$($env:DEPLOY_ENVIRONMENT -replace "'", "''")'"
         ) -join "`n"
 
         # Read the deployment script template and prepend config
@@ -221,45 +223,54 @@ runs:
           --scripts "@$scriptPath" `
           --output json 2>&1
 
-        Write-Host "Raw result: $result"
+        # Filter to string-only output before JSON parsing.
+        # 2>&1 produces mixed [string] + [ErrorRecord] objects; ErrorRecord
+        # objects break ConvertFrom-Json.
+        $jsonText = ($result | Where-Object { $_ -is [string] }) -join "`n"
 
+        Write-Host "VM command completed, parsing result..."
+
+        $resultObj = $null
         try {
-            $resultObj = $result | ConvertFrom-Json
+            $resultObj = $jsonText | ConvertFrom-Json
+        } catch {
+            Write-Error "Failed to parse VM run-command result as JSON: $_"
+            echo "status=failure" >> $env:GITHUB_OUTPUT
+            exit 1
+        }
 
-            $stdout = ""
-            $stderr = ""
-            foreach ($item in $resultObj.value) {
-                if ($item.code -like "*StdOut*") { $stdout = $item.message }
-                if ($item.code -like "*StdErr*") { $stderr = $item.message }
+        $stdout = ""
+        $stderr = ""
+        foreach ($item in $resultObj.value) {
+            if ($item.code -like "*StdOut*") { $stdout = $item.message }
+            if ($item.code -like "*StdErr*") { $stderr = $item.message }
+        }
+
+        Write-Host "`n========== Deployment Output =========="
+        Write-Host $stdout
+        if ($stderr) {
+            Write-Host "`n========== Stderr =========="
+            Write-Host $stderr
+        }
+        Write-Host "======================================`n"
+
+        # Check success marker first. IIS modules may emit warnings to stderr
+        # even on successful deployments, so we don't fail on stderr alone.
+        $succeeded = $stdout -match "Deployment Completed Successfully"
+
+        if ($succeeded) {
+            Write-Host "Deployment successful!"
+            if ($stderr -and $stderr.Trim()) {
+                Write-Warning "Deployment succeeded but had stderr output (see above)."
             }
-
-            Write-Host "`n========== Deployment Output =========="
-            Write-Host $stdout
-            if ($stderr) {
-                Write-Host "`n========== Errors =========="
-                Write-Host $stderr
-            }
-            Write-Host "======================================`n"
-
-            # Fail if stderr has errors OR stdout doesn't confirm success
+            echo "status=success" >> $env:GITHUB_OUTPUT
+        } else {
+            echo "status=failure" >> $env:GITHUB_OUTPUT
             if ($stderr -and $stderr.Trim()) {
                 Write-Error "Deployment failed with errors on the VM. See stderr above."
-                echo "status=failure" >> $env:GITHUB_OUTPUT
-                exit 1
-            }
-
-            if ($stdout -match "Deployment Completed Successfully") {
-                Write-Host "Deployment successful!"
-                echo "status=success" >> $env:GITHUB_OUTPUT
             } else {
-                Write-Error "Deployment may have failed. Check output above."
-                echo "status=failure" >> $env:GITHUB_OUTPUT
-                exit 1
+                Write-Error "Deployment failed - success marker not found. Check output above."
             }
-        } catch {
-            Write-Error "Failed to parse result: $_"
-            Write-Host "Raw output was: $result"
-            echo "status=failure" >> $env:GITHUB_OUTPUT
             exit 1
         }
 
