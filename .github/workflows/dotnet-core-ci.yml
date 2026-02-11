@@ -54,6 +54,7 @@ jobs:
           test-path: ${{ env.TEST_PATH }}
           configuration: 'Release'
           collect-coverage: 'true'
+          no-build: 'true'
 
       - name: Publish .NET Application
         uses: ./.github/actions/dotnet-publish
@@ -63,6 +64,7 @@ jobs:
           configuration: 'Release'
           output-path: ${{ github.workspace }}/publish
           use-app-host: 'false'
+          no-build: 'true'
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

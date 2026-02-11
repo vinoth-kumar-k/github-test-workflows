@@ -22,6 +22,10 @@ inputs:
     description: 'Whether to use app host'
     required: false
     default: 'false'
+  no-build:
+    description: 'Skip building the project (use existing build artifacts)'
+    required: false
+    default: 'true'
 
 outputs:
   publish-path:
@@ -44,11 +48,20 @@ runs:
         CONFIGURATION: ${{ inputs.configuration }}
         OUTPUT_PATH: ${{ inputs.output-path }}
         USE_APP_HOST: ${{ inputs.use-app-host }}
+        NO_BUILD: ${{ inputs.no-build }}
       run: |
-        dotnet publish "$PROJECT_PATH" \
-          -c "$CONFIGURATION" \
-          -o "$OUTPUT_PATH" \
-          /p:UseAppHost="$USE_APP_HOST"
+        # Build the publish command
+        PUBLISH_CMD="dotnet publish \"$PROJECT_PATH\" -c \"$CONFIGURATION\" -o \"$OUTPUT_PATH\""
+
+        # Add --no-build flag if requested
+        if [ "$NO_BUILD" == "true" ]; then
+          PUBLISH_CMD="$PUBLISH_CMD --no-build"
+        fi
+
+        PUBLISH_CMD="$PUBLISH_CMD /p:UseAppHost=\"$USE_APP_HOST\""
+
+        # Execute the publish command
+        eval $PUBLISH_CMD
 
         echo "publish-path=$OUTPUT_PATH" >> $GITHUB_OUTPUT
         echo "Published to: $OUTPUT_PATH"
