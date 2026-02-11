@@ -83,7 +83,7 @@ The pipeline uses custom composite GitHub Actions to encapsulate complex logic:
     - Cleans up the blob from storage.
     - Performs a health check against the application URL.
 - **`load-config`:** Parses `.github/config/environments.yml` to extract environment-specific settings (VM name, resource group, etc.).
-- **`download-workflow-artifact`:** Helper action to securely download artifacts from a separate workflow run (essential for the `workflow_run` trigger pattern).
+- **`download-workflow-artifact`:** Custom composite action using GitHub REST API to download artifacts from a separate workflow run. Replaces third-party `dawidd6/action-download-artifact` to comply with the whitelisted actions policy. Supports exact and wildcard artifact name matching.
 
 ## 4. Build Pipeline Flow
 
@@ -107,7 +107,7 @@ The pipeline uses custom composite GitHub Actions to encapsulate complex logic:
    - Invoke `iis-deploy` action:
      - **Staging:** Upload ZIP to Azure Blob Storage.
      - **Execution:** Trigger VM Run Command to pull the ZIP and deploy to IIS.
-     - **Verification:** Poll application URL for HTTP 200 OK.
+     - **Verification:** Health check via single HTTP request to application URL (non-200 logged as warning).
 
 ## 5. VM Deployment Strategy
 
@@ -120,7 +120,10 @@ Unlike containerized deployments, deploying to legacy VMs requires a different s
     - The SAS URL is passed to the VM Run Command script.
 - **VM Run Command:** This feature allows executing PowerShell scripts on the VM without opening inbound ports (RDP/WinRM) to the internet.
     - The script running on the VM downloads the ZIP from the SAS URL.
-    - It stops the IIS App Pool (if needed), extracts the files to the web root, and restarts the App Pool.
+    - It creates a backup of the current deployment before making changes.
+    - It stops the IIS App Pool, extracts the files to the web root, creates/updates the IIS application, and restarts the App Pool.
+    - On failure, it automatically rolls back to the latest backup and restores the IIS application configuration.
+    - The SAS URL is Base64-encoded before passing to VM Run Command to avoid `&` characters in SAS query strings breaking parameter parsing.
 
 ## 6. Configuration Management
 
@@ -173,7 +176,7 @@ dev:
 1. **Modularity:** CI and CD are decoupled. CI focuses on creating a valid package; CD focuses on delivery.
 2. **Immutability (Artifacts):** The exact ZIP file created in CI is deployed to all environments.
 3. **Security:** No open ports required on the VM. All control traffic goes through authenticated Azure APIs.
-4. **Resilience:** The deployment script includes retry logic (implicit in Azure CLI) and explicit health checks.
+4. **Resilience:** The deployment script includes automatic rollback on failure (restores from backup) and post-deployment health checks.
 5. **Traceability:** Deployment summaries link back to the source commit and CI run ID.
 
 ## 10. Technology Stack

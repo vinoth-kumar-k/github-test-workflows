@@ -98,7 +98,8 @@ The pipeline uses custom composite GitHub Actions to encapsulate common, repeata
    - Download published artifacts from the previous job
    - Load environment-specific configuration
    - Authenticate to Azure and ACR
-   - Build Docker image with GitHub Actions cache
+   - Set up Docker Buildx for advanced build features
+   - Build Docker image with GitHub Actions cache (`type=gha`)
    - Generate metadata tags (latest for main, branch, SHA)
    - Push image to ACR
 
@@ -111,7 +112,7 @@ The pipeline uses custom composite GitHub Actions to encapsulate common, repeata
    - Set AKS cluster context with kubelogin
    - Convert kubeconfig to Service Principal authentication
    - Deploy Kubernetes manifests with environment variables
-   - Wait for deployment rollout (300s timeout)
+   - Wait for deployment rollout (300s timeout) with automatic rollback on failure
    - Output deployment summary
 
 ## 5. Dockerfile Design and Best Practices
@@ -185,7 +186,8 @@ dev:
 - Environment-specific cluster configuration
 - kubelogin integration for automated authentication
 - Manifest-based deployment with envsubst templating
-- Rollout status verification ensures availability
+- Rollout status verification with automatic rollback on failure
+- Deployment annotation tracking via `kubernetes.io/change-cause`
 
 ### 8.3. GitHub Actions Integration
 - Reusable workflows for CI/CD separation
@@ -212,5 +214,5 @@ dev:
 | Container Registry | Azure Container Registry (ACR) | Docker image storage |
 | Orchestration | Azure Kubernetes Service (AKS) | Container deployment |
 | Authentication | Service Principal + kubelogin | Azure access |
-| Configuration | YAML + Python | Environment management |
+| Configuration | YAML + PowerShell | Environment management |
 | Container Image | ASP.NET Core 9.0 runtime | Application runtime |
