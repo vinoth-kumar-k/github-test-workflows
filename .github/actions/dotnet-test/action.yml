@@ -18,6 +18,10 @@ inputs:
     description: 'Test output verbosity (quiet|minimal|normal|detailed|diagnostic)'
     required: false
     default: 'normal'
+  no-build:
+    description: 'Skip building the project (use existing build artifacts)'
+    required: false
+    default: 'true'
 
 outputs:
   coverage-path:
@@ -38,27 +42,28 @@ runs:
         CONFIGURATION: ${{ inputs.configuration }}
         VERBOSITY: ${{ inputs.verbosity }}
         COLLECT_COVERAGE: ${{ inputs.collect-coverage }}
+        NO_BUILD: ${{ inputs.no-build }}
       run: |
         # Create test results directory
         mkdir -p TestResults
 
-        # Execute tests with or without coverage collection
-        if [ "$COLLECT_COVERAGE" == "true" ]; then
-          dotnet test "$TEST_PATH" \
-            --configuration "$CONFIGURATION" \
-            --no-build \
-            --verbosity "$VERBOSITY" \
-            --logger "trx;LogFileName=test-results.trx" \
-            --results-directory TestResults \
-            --collect:"XPlat Code Coverage"
-        else
-          dotnet test "$TEST_PATH" \
-            --configuration "$CONFIGURATION" \
-            --no-build \
-            --verbosity "$VERBOSITY" \
-            --logger "trx;LogFileName=test-results.trx" \
-            --results-directory TestResults
+        # Build the dotnet test command
+        TEST_CMD="dotnet test \"$TEST_PATH\" --configuration \"$CONFIGURATION\""
+
+        # Add --no-build flag if requested
+        if [ "$NO_BUILD" == "true" ]; then
+          TEST_CMD="$TEST_CMD --no-build"
         fi
+
+        TEST_CMD="$TEST_CMD --verbosity \"$VERBOSITY\" --logger \"trx;LogFileName=test-results.trx\" --results-directory TestResults"
+
+        # Add coverage collection if requested
+        if [ "$COLLECT_COVERAGE" == "true" ]; then
+          TEST_CMD="$TEST_CMD --collect:\"XPlat Code Coverage\""
+        fi
+
+        # Execute the test command
+        eval $TEST_CMD
 
         # Set outputs
         echo "test-results-path=TestResults" >> $GITHUB_OUTPUT

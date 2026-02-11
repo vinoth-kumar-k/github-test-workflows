@@ -1,24 +1,5 @@
-# Multi-stage Dockerfile for ASP.NET Core Web API
-# Stage 1: Build
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
-WORKDIR /src
-
-# Copy csproj and restore dependencies (layer caching)
-COPY ["DotNetCoreApp/DotNetCoreApp.csproj", "DotNetCoreApp/"]
-RUN dotnet restore "DotNetCoreApp/DotNetCoreApp.csproj"
-
-# Copy the rest of the source code
-COPY . .
-WORKDIR "/src/DotNetCoreApp"
-
-# Build the application
-RUN dotnet build "DotNetCoreApp.csproj" -c Release -o /app/build
-
-# Stage 2: Publish
-FROM build AS publish
-RUN dotnet publish "DotNetCoreApp.csproj" -c Release -o /app/publish /p:UseAppHost=false
-
-# Stage 3: Runtime
+# Dockerfile for ASP.NET Core Web API using pre-built artifacts
+# This Dockerfile expects pre-built artifacts in the 'publish' directory
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
@@ -26,8 +7,8 @@ WORKDIR /app
 RUN addgroup --system --gid 1000 appuser && \
     adduser --system --uid 1000 --ingroup appuser appuser
 
-# Copy published output from publish stage
-COPY --from=publish /app/publish .
+# Copy pre-built published artifacts from build context
+COPY publish .
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
