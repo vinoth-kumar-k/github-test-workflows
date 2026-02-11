@@ -20,11 +20,16 @@ This guide documents two approaches for running GitHub Actions on a runner with 
 
 ```powershell
 mkdir C:\actions-runner && cd C:\actions-runner
+
+# Copy the download URL from the GitHub "Add Runner" UI (Settings → Actions → Runners → New self-hosted runner).
+# The URL below is an example — always use the latest version from the UI.
 Invoke-WebRequest -Uri https://github.com/actions/runner/releases/download/v2.321.0/actions-runner-win-x64-2.321.0.zip -OutFile actions-runner.zip
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::ExtractToDirectory("$PWD\actions-runner.zip", "$PWD")
 
-# Configure with labels matching the workflow runs-on
+# Configure with labels matching the workflow runs-on.
+# YOUR_TOKEN is the temporary registration token from the GitHub "Add Runner" UI (expires in ~1 hour).
+# It is NOT a Personal Access Token (PAT).
 .\config.cmd --url https://github.com/OWNER/REPO --token YOUR_TOKEN --name vbnet-runner-01 --labels self-hosted,windows,vbnet --work _work
 
 # Install as Windows service
@@ -43,6 +48,8 @@ az version
 ```
 
 > **Note:** Since tools (MSBuild, NuGet, .NET Framework 4.8) are pre-installed on the VM, the `microsoft/setup-msbuild@v2` and `NuGet/setup-nuget@v2` actions in workflows simply add them to PATH (idempotent).
+
+> **Note:** If you install or update tools after the runner service is already running, restart the service to pick up PATH changes: `.\svc.cmd stop; .\svc.cmd start`
 
 ---
 
@@ -84,6 +91,20 @@ runs-on:
 | **Outbound** | HTTPS to `github.com`, `*.actions.githubusercontent.com`, `*.blob.core.windows.net` |
 | **Inbound** | None required (runner polls GitHub) |
 | **Internal** | Access to Azure APIs for blob storage and VM Run Command |
+
+**Why `*.blob.core.windows.net`?** The `iis-deploy` action uploads the deployment ZIP to Azure Blob Storage as a staging step (VM Run Command has script size limits, so the binary is transferred via blob). The runner must have network access to the storage account defined in `.github/config/environments.yml`. If the storage account uses Private Endpoints, ensure the runner's VNet has correct DNS resolution for the private endpoint.
+
+---
+
+## When is a Private Runner Required?
+
+The `iis-deploy` action uses `az vm run-command` (Azure Control Plane over public HTTPS) and Azure Blob Storage with SAS tokens. This means a **private runner is NOT strictly required** if:
+- The Azure VM accepts Run Commands (default behavior)
+- The Storage Account allows public access with SAS tokens
+
+A **private runner IS required** when:
+- The Storage Account is firewalled to "Selected Networks" or uses Private Endpoints only
+- Organization policy mandates that CI/CD runners operate within the private VNet
 
 ---
 
