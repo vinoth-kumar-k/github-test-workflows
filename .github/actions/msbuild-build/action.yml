@@ -74,14 +74,17 @@ runs:
           "/verbosity:minimal"
         )
 
-        # Publish to a flat folder structure for clean IIS deployment
+        # Build MSDeploy package — WebPublishMethod=FileSystem is ignored by
+        # legacy ASP.NET Web Application projects, so we use Package mode and
+        # extract the flat content from the MSDeploy ZIP in the next step.
         if ($env:CREATE_PACKAGE -eq "true") {
-          $publishUrl = Join-Path (Get-Location) "publish\content"
+          $packageLocation = Join-Path (Get-Location) "publish"
           $buildArgs += @(
             "/p:DeployOnBuild=true",
-            "/p:WebPublishMethod=FileSystem",
-            "/p:publishUrl=$publishUrl",
-            "/p:SkipInvalidConfigurations=true"
+            "/p:WebPublishMethod=Package",
+            "/p:PackageAsSingleFile=true",
+            "/p:SkipInvalidConfigurations=true",
+            "/p:PackageLocation=$packageLocation"
           )
         }
 
@@ -100,32 +103,69 @@ runs:
         $solutionDir = Split-Path -Parent $env:SOLUTION_PATH
         echo "build-output=$solutionDir\bin\$($env:CONFIGURATION)" >> $env:GITHUB_OUTPUT
 
-    - name: Create deployment ZIP
+    - name: Repackage as clean flat ZIP
       id: package
       if: inputs.create-package == 'true'
       shell: pwsh
       run: |
-        $contentDir = Join-Path (Get-Location) "publish\content"
-        $zipPath = Join-Path (Get-Location) "publish\VBNetApp.zip"
+        $publishDir = Join-Path (Get-Location) "publish"
 
-        if (-not (Test-Path $contentDir)) {
-          Write-Error "Publish content directory not found: $contentDir"
+        # Find the MSDeploy ZIP produced by MSBuild
+        $msdeployZip = Get-ChildItem -Path $publishDir -Filter "*.zip" -File -ErrorAction SilentlyContinue |
+          Select-Object -First 1
+
+        if (-not $msdeployZip) {
+          # Fallback: search under the solution's obj folder
+          $msdeployZip = Get-ChildItem -Path "src" -Filter "*.zip" -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.DirectoryName -match 'Package' } | Select-Object -First 1
+        }
+
+        if (-not $msdeployZip) {
+          Write-Error "No MSDeploy package ZIP found"
           exit 1
         }
 
-        Write-Host "Creating clean deployment ZIP from: $contentDir"
-        Compress-Archive -Path "$contentDir\*" -DestinationPath $zipPath -Force
+        Write-Host "Found MSDeploy package: $($msdeployZip.FullName)"
 
-        $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
-        Write-Host "Deployment package created: $zipPath ($zipSize MB)"
+        # Extract MSDeploy ZIP to temp folder
+        $extractTemp = Join-Path $publishDir "extract-temp"
+        Expand-Archive -Path $msdeployZip.FullName -DestinationPath $extractTemp -Force
+
+        # MSDeploy packages nest content under PackageTmp — find web.config to locate the web root
+        $webConfig = Get-ChildItem -Path $extractTemp -Filter "web.config" -Recurse -File | Select-Object -First 1
+
+        if ($webConfig) {
+          $contentDir = $webConfig.DirectoryName
+          Write-Host "Found web content at: $contentDir"
+        } else {
+          Write-Error "No web.config found inside MSDeploy package"
+          exit 1
+        }
+
+        # Create clean flat ZIP from the web content
+        $cleanZipPath = Join-Path $publishDir "VBNetApp.zip"
+        # Remove the original MSDeploy ZIP first if it has the same name
+        if ($msdeployZip.FullName -eq $cleanZipPath) {
+          $msdeployZip = $null  # release handle
+          Remove-Item -Path $cleanZipPath -Force
+        }
+        Compress-Archive -Path "$contentDir\*" -DestinationPath $cleanZipPath -Force
+
+        # Cleanup temp
+        Remove-Item -Path $extractTemp -Recurse -Force -ErrorAction SilentlyContinue
+
+        $zipSize = [math]::Round((Get-Item $cleanZipPath).Length / 1MB, 2)
+        Write-Host "Clean deployment package created: $cleanZipPath ($zipSize MB)"
 
         # Verify ZIP contains flat IIS-ready structure
         Write-Host "ZIP contents (top-level):"
-        $entries = [System.IO.Compression.ZipFile]::OpenRead($zipPath).Entries |
-          ForEach-Object { ($_.FullName -split '/')[0] } | Sort-Object -Unique
-        $entries | ForEach-Object { Write-Host "  $_" }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($cleanZipPath)
+        $zip.Entries | ForEach-Object { ($_.FullName -split '/')[0] } | Sort-Object -Unique |
+          ForEach-Object { Write-Host "  $_" }
+        $zip.Dispose()
 
-        echo "package-path=$zipPath" >> $env:GITHUB_OUTPUT
+        echo "package-path=$cleanZipPath" >> $env:GITHUB_OUTPUT
 
     - name: Upload build artifacts
       if: inputs.create-package == 'true'
