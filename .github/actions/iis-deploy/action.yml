@@ -189,118 +189,130 @@ runs:
         Write-Host "VM: $($env:VM_NAME)"
         Write-Host "Resource Group: $($env:RESOURCE_GROUP)"
 
-        # Create the deployment script that runs on the VM
-        $vmScript = @'
-        param($PackageUrlBase64, $AppPoolName, $SiteName, $AppName, $DeployScriptPath, $Environment)
+        # Build the VM script with values baked in.
+        # We embed all values directly instead of using --parameters because
+        # az vm run-command invoke splits parameter values at spaces, breaking
+        # values like "Default Web Site".
+        $vmScript = @"
+        `$ErrorActionPreference = 'Stop'
 
         try {
+            # Configuration (baked in from CI runner)
+            `$PackageUrlBase64 = '$($env:PACKAGE_URL_BASE64)'
+            `$AppPoolName = '$($env:IIS_APP_POOL)'
+            `$SiteName = '$($env:IIS_SITE_NAME)'
+            `$AppName = '$($env:IIS_APP_NAME)'
+            `$DeployScriptPath = '$($env:DEPLOY_SCRIPT_PATH)'
+            `$Environment = '$($env:DEPLOY_ENVIRONMENT)'
+
             # Decode the base64-encoded URL
-            $PackageUrl = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($PackageUrlBase64))
+            `$PackageUrl = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(`$PackageUrlBase64))
             Write-Host "Package URL decoded successfully"
 
             # Create deploy directory
-            $deployDir = 'C:\Deploy'
-            if (-not (Test-Path $deployDir)) {
-                New-Item -Path $deployDir -ItemType Directory -Force | Out-Null
+            `$deployDir = 'C:\Deploy'
+            if (-not (Test-Path `$deployDir)) {
+                New-Item -Path `$deployDir -ItemType Directory -Force | Out-Null
             }
 
             # Download the package
-            $packagePath = Join-Path $deployDir 'VBNetApp.zip'
+            `$packagePath = Join-Path `$deployDir 'VBNetApp.zip'
             Write-Host "Downloading package from Azure Blob Storage..."
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri $PackageUrl -OutFile $packagePath -UseBasicParsing
-            Write-Host "Package downloaded to: $packagePath"
+            Invoke-WebRequest -Uri `$PackageUrl -OutFile `$packagePath -UseBasicParsing
+            Write-Host "Package downloaded to: `$packagePath"
 
             # Import IIS module
             Import-Module WebAdministration -ErrorAction Stop
 
             # Define paths
-            $wwwRoot = "C:\inetpub\wwwroot\$AppName"
-            $backupDir = "C:\Deploy\backups\$AppName"
+            `$wwwRoot = "C:\inetpub\wwwroot\`$AppName"
+            `$backupDir = "C:\Deploy\backups\`$AppName"
 
             # Create app pool if it doesn't exist
-            if (-not (Test-Path "IIS:\AppPools\$AppPoolName")) {
-                Write-Host "Creating application pool: $AppPoolName"
-                New-WebAppPool -Name $AppPoolName
-                Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name managedRuntimeVersion -Value "v4.0"
+            if (-not (Test-Path "IIS:\AppPools\`$AppPoolName")) {
+                Write-Host "Creating application pool: `$AppPoolName"
+                New-WebAppPool -Name `$AppPoolName
+                Set-ItemProperty -Path "IIS:\AppPools\`$AppPoolName" -Name managedRuntimeVersion -Value "v4.0"
             }
 
             # Stop app pool if running
-            $poolState = (Get-WebAppPoolState -Name $AppPoolName -ErrorAction SilentlyContinue).Value
-            if ($poolState -eq "Started") {
+            `$poolState = (Get-WebAppPoolState -Name `$AppPoolName -ErrorAction SilentlyContinue).Value
+            if (`$poolState -eq "Started") {
                 Write-Host "Stopping application pool..."
-                Stop-WebAppPool -Name $AppPoolName
+                Stop-WebAppPool -Name `$AppPoolName
                 Start-Sleep -Seconds 3
             }
 
             # Create backup of current deployment
-            if (Test-Path $wwwRoot) {
-                if (-not (Test-Path $backupDir)) {
-                    New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
+            if (Test-Path `$wwwRoot) {
+                if (-not (Test-Path `$backupDir)) {
+                    New-Item -Path `$backupDir -ItemType Directory -Force | Out-Null
                 }
-                $backupName = "backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-                $backupPath = Join-Path $backupDir $backupName
-                Write-Host "Creating backup: $backupPath"
-                Copy-Item -Path $wwwRoot -Destination $backupPath -Recurse -Force
+                `$backupName = "backup-`$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+                `$backupPath = Join-Path `$backupDir `$backupName
+                Write-Host "Creating backup: `$backupPath"
+                Copy-Item -Path `$wwwRoot -Destination `$backupPath -Recurse -Force
             }
 
             # Create or clean deployment directory
-            if (-not (Test-Path $wwwRoot)) {
-                New-Item -Path $wwwRoot -ItemType Directory -Force | Out-Null
+            if (-not (Test-Path `$wwwRoot)) {
+                New-Item -Path `$wwwRoot -ItemType Directory -Force | Out-Null
             } else {
-                Remove-Item -Path "$wwwRoot\*" -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item -Path "`$wwwRoot\*" -Recurse -Force -ErrorAction SilentlyContinue
             }
 
             # Extract clean ZIP directly to wwwRoot (flat structure, no nested MSDeploy paths)
-            Write-Host "Extracting deployment package to: $wwwRoot"
-            Expand-Archive -Path $packagePath -DestinationPath $wwwRoot -Force
+            Write-Host "Extracting deployment package to: `$wwwRoot"
+            Expand-Archive -Path `$packagePath -DestinationPath `$wwwRoot -Force
 
             # List deployed files for verification
             Write-Host "Deployed files:"
-            Get-ChildItem -Path $wwwRoot -Recurse -File | Select-Object -First 20 | ForEach-Object { Write-Host "  $($_.Name)" }
+            Get-ChildItem -Path `$wwwRoot -Recurse -File | Select-Object -First 20 | ForEach-Object { Write-Host "  `$(`$_.Name)" }
 
             # Run custom deploy script if it exists on the VM
-            if ($DeployScriptPath -and (Test-Path $DeployScriptPath)) {
-                Write-Host "Running custom deploy script: $DeployScriptPath"
-                & $DeployScriptPath -AppName $AppName -AppPoolName $AppPoolName -SiteName $SiteName -Environment $Environment -WebRoot $wwwRoot
+            if (`$DeployScriptPath -and (Test-Path `$DeployScriptPath)) {
+                Write-Host "Running custom deploy script: `$DeployScriptPath"
+                & `$DeployScriptPath -AppName `$AppName -AppPoolName `$AppPoolName -SiteName `$SiteName -Environment `$Environment -WebRoot `$wwwRoot
             }
 
             # Create/update IIS application
-            $appPath = "IIS:\Sites\$SiteName\$AppName"
-            if (-not (Test-Path $appPath)) {
+            `$appPath = "IIS:\Sites\`$SiteName\`$AppName"
+            if (-not (Test-Path `$appPath)) {
                 Write-Host "Creating IIS application..."
-                New-WebApplication -Name $AppName -Site $SiteName -PhysicalPath $wwwRoot -ApplicationPool $AppPoolName
+                New-WebApplication -Name `$AppName -Site `$SiteName -PhysicalPath `$wwwRoot -ApplicationPool `$AppPoolName
             } else {
                 Write-Host "Updating IIS application..."
-                Set-ItemProperty $appPath -Name physicalPath -Value $wwwRoot
-                Set-ItemProperty $appPath -Name applicationPool -Value $AppPoolName
+                Set-ItemProperty -Path `$appPath -Name physicalPath -Value `$wwwRoot
+                Set-ItemProperty -Path `$appPath -Name applicationPool -Value `$AppPoolName
             }
 
             # Start app pool
             Write-Host "Starting application pool..."
-            Start-WebAppPool -Name $AppPoolName
+            Start-WebAppPool -Name `$AppPoolName
 
             # Cleanup downloaded package
-            Remove-Item -Path $packagePath -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path `$packagePath -Force -ErrorAction SilentlyContinue
 
             Write-Host "Deployment Completed Successfully!"
         } catch {
-            Write-Error "Deployment failed: $_"
+            Write-Error "Deployment failed: `$_"
 
             # Attempt rollback from backup
-            $latestBackup = Get-ChildItem -Path "C:\Deploy\backups\$AppName" -Directory -ErrorAction SilentlyContinue |
+            `$ErrorActionPreference = 'SilentlyContinue'
+            `$latestBackup = Get-ChildItem -Path "C:\Deploy\backups\`$AppName" -Directory |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($latestBackup) {
-                Write-Host "Rolling back to: $($latestBackup.FullName)"
-                Remove-Item -Path "$wwwRoot\*" -Recurse -Force -ErrorAction SilentlyContinue
-                Copy-Item -Path "$($latestBackup.FullName)\*" -Destination $wwwRoot -Recurse -Force
-                Start-WebAppPool -Name $AppPoolName -ErrorAction SilentlyContinue
+            if (`$latestBackup) {
+                Write-Host "Rolling back to: `$(`$latestBackup.FullName)"
+                Remove-Item -Path "`$wwwRoot\*" -Recurse -Force
+                Copy-Item -Path "`$(`$latestBackup.FullName)\*" -Destination `$wwwRoot -Recurse -Force
+                Start-WebAppPool -Name `$AppPoolName
                 Write-Host "Rollback completed"
             }
 
             exit 1
         }
-        '@
+"@
 
         # Write script to temp file
         $scriptPath = Join-Path $env:RUNNER_TEMP "deploy-script.ps1"
@@ -308,12 +320,13 @@ runs:
 
         Write-Host "Executing deployment on VM..."
 
+        # No --parameters: all values are embedded in the script to avoid
+        # az vm run-command splitting values at spaces.
         $result = az vm run-command invoke `
           --resource-group $env:RESOURCE_GROUP `
           --name $env:VM_NAME `
           --command-id RunPowerShellScript `
           --scripts "@$scriptPath" `
-          --parameters "PackageUrlBase64=$($env:PACKAGE_URL_BASE64)" "AppPoolName=$($env:IIS_APP_POOL)" "SiteName=$($env:IIS_SITE_NAME)" "AppName=$($env:IIS_APP_NAME)" "DeployScriptPath=$($env:DEPLOY_SCRIPT_PATH)" "Environment=$($env:DEPLOY_ENVIRONMENT)" `
           --output json 2>&1
 
         Write-Host "Raw result: $result"
@@ -335,6 +348,13 @@ runs:
                 Write-Host $stderr
             }
             Write-Host "======================================`n"
+
+            # Fail if stderr has errors OR stdout doesn't confirm success
+            if ($stderr -and $stderr.Trim()) {
+                Write-Error "Deployment failed with errors on the VM. See stderr above."
+                echo "status=failure" >> $env:GITHUB_OUTPUT
+                exit 1
+            }
 
             if ($stdout -match "Deployment Completed Successfully") {
                 Write-Host "Deployment successful!"
